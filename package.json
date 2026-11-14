@@ -14,7 +14,7 @@
     "setup": "node bin/assistant.mjs setup",
     "start": "node bin/assistant.mjs start",
     "doctor": "node bin/assistant.mjs doctor",
-    "test": "node --test test/*.test.mjs && node plugins/memory/selftest.mjs && node plugins/soul/selftest.mjs",
+    "test": "node --test test/*.test.mjs && node plugins/memory/selftest.mjs && node plugins/learn/selftest.mjs && node plugins/soul/selftest.mjs",
     "test:live": "HINDSIGHT_LIVE=1 node plugins/memory/livetest.mjs"
   },
   "license": "MIT"

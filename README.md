@@ -3,7 +3,7 @@
 A assistant built on [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness).
 Everything is a plugin: identity, memory, the browser, and later the channel.
 
-Early. One profile, three plugins, no channel yet.
+Early. One profile, four plugins, no channel yet.
 
 ## Requirements
 
@@ -46,6 +46,7 @@ node bin/assistant.mjs doctor --home ~/.dsh-assistant --name personal
 |---|---|
 | `@local/dsh-soul` | Injects `soul/SOUL.md` at prompt order 0. Edit the file; no restart config. |
 | `@local/dsh-memory` | A bounded `memory/profile.json` plus `memory_remember` / `memory_recall` / `memory_forget`. Local by default; Hindsight is opt-in. |
+| `@local/dsh-learn` | Reviews a completed turn in the background and records durable memory plus procedural skills under `$DSH_HOME`, with an audit log, caps and no approval prompt. |
 | `dsh-ego-browser` | Real Chrome tools (`ego_*`): open, click, type, screenshot, tabs. Third-party (MIT), pinned to 0.9.14. |
 
 ## Data and privacy
@@ -55,6 +56,9 @@ node bin/assistant.mjs doctor --home ~/.dsh-assistant --name personal
 - Memory is local. Semantic memory is off unless you set `apiUrl` on the memory row.
 - Semantic memory is scoped to its own Hindsight bank (`dsh-assistant`). The plugin refuses
   any other bank, including another assistant's `another-agent` or `another-agent-*` banks.
+- Learning writes only inside `$DSH_HOME/{memory,skills,learning}`; it never edits `SOUL.md`,
+  profile config or host state. Every change is recorded in `learning/audit.jsonl`, and a
+  replaced skill keeps up to five previous versions under `skills/.history/`.
 - The browser plugin drives your installed Chrome and can act as you on sites.
   Treat it as consequential.
 

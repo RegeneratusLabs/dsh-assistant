@@ -13,6 +13,7 @@ test('manifest composes base, identity, memory, browser, voice and the plugin in
     '@deepseek-ai/dsh-web-app',
     '@local/dsh-soul',
     '@local/dsh-memory',
+    '@local/dsh-learn',
     'dsh-ego-browser',
     '@deepseek-ai/dsh-experimental-voice-input-bundle',
     '@deepseek-ai/dsh-experimental-plugin-market-bundle',

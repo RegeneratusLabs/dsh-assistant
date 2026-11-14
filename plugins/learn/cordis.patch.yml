@@ -1,0 +1,14 @@
+# Bundle patch for the turn reviewer. One Host row observes durable session
+# events, runs one small auxiliary model call after a qualifying turn, and
+# writes only inside $DSH_HOME. A profile's own patch layer may override it:
+#
+#   - id: dsh-learn
+#     config:
+#       enabled: true
+#       provider: opencode-go        # both or neither; default is the session route
+#       model: deepseek-v4.1-flash
+#       minUserChars: 80
+#       minIntervalMs: 300000
+- insert:
+    - id: dsh-learn
+      name: '@local/dsh-learn'

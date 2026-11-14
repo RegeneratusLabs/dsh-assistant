@@ -483,6 +483,9 @@ function updateStatus(config, patch) {
     bank: config.bankId,
     apiUrl: config.apiUrl,
     semantic: config.apiUrl !== '',
+    profilePath: config.profilePath,
+    userBudget: config.userBudget,
+    agentBudget: config.agentBudget,
     checkedAt: new Date().toISOString(),
     ...previous,
     ...patch,
@@ -577,7 +580,7 @@ function retryable(error) {
  * @param tags - Hindsight tags (the curated tracks double as tags).
  * @returns `{ok, operationId?, message?}`; never throws.
  */
-async function retainFact(config, content, tags) {
+export async function retainFact(config, content, tags) {
   if (!semanticEnabled(config)) return { ok: true, skipped: true };
   if (!bankAllowed(config.bankId, config.allowBanks)) return { ok: false, message: `bank ${config.bankId} is not allowed` };
   const operationId = randomUUID();
