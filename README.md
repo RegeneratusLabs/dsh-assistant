@@ -29,6 +29,17 @@ npm run doctor
 pinned browser plugin, and writes the telemetry-off patch. It never touches an
 existing DSH home or the host.
 
+## This machine
+
+The assistant runs as the `dsh-assistant.service` user unit: home `~/.dsh-assistant`,
+profile `personal`, port 7002, tailnet `https://127.0.0.1:7310/`.
+After changing plugin code:
+
+```sh
+systemctl --user restart dsh-assistant.service
+node bin/assistant.mjs doctor --home ~/.dsh-assistant --name personal
+```
+
 ## What is installed
 
 | Plugin | What it does |
