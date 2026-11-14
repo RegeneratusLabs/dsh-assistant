@@ -37,7 +37,7 @@ test('prepare writes a private home, profile, privacy patch and soul', async () 
     assert.equal((await stat(path.join(profile, 'package.json'))).mode & 0o777, 0o600);
     assert.equal((await readFile(path.join(profile, '.npmrc'), 'utf8')).trim(), 'auto-install-peers=false');
 
-    const patch = await readFile(path.join(home, 'cordis.patch.yml'), 'utf8');
+    const patch = await readFile(path.join(profile, 'cordis.patch.yml'), 'utf8');
     for (const id of ['session-log-deepseek', 'plugin-package-inventory-deepseek', 'session-telemetry-otel']) {
       assert.match(patch, new RegExp(`- id: ${id}`));
     }

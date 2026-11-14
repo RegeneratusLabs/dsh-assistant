@@ -40,7 +40,7 @@ existing DSH home or the host.
 ## Data and privacy
 
 - Data lives in `~/.dsh-assistant/`, mode 0700: soul, memory, sessions, credentials.
-- Telemetry egress is off by default (`config/telemetry-off.patch.yml`).
+- Telemetry egress is off by default; the profile patch is `config/telemetry-off.patch.yml`.
 - Memory is local. Semantic memory is off unless you set `apiUrl` on the memory row.
 - The browser plugin drives your installed Chrome and can act as you on sites.
   Treat it as consequential.
