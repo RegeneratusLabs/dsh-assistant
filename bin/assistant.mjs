@@ -17,6 +17,7 @@ function parse(argv) {
     name: DEFAULTS.name,
     port: DEFAULTS.port,
     browser: true,
+    requirePortFree: false,
   };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -24,6 +25,7 @@ function parse(argv) {
     else if (arg === '--name') opts.name = argv[++i];
     else if (arg === '--port') opts.port = Number(argv[++i]);
     else if (arg === '--no-browser') opts.browser = false;
+    else if (arg === '--require-port-free') opts.requirePortFree = true;
     else if (arg === '--help' || arg === '-h') opts.help = true;
     else throw new Error(`unknown option: ${arg}`);
   }
@@ -42,6 +44,7 @@ Options:
   --name <name>    profile name (default assistant)
   --port <port>    host port (default ${DEFAULTS.port})
   --no-browser     skip the Chrome browser plugin
+  --require-port-free  make doctor fail when the port is already in use
 `;
 
 try {

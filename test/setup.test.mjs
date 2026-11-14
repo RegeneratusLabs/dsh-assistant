@@ -6,7 +6,7 @@ import path from 'node:path';
 import { buildManifest } from '../lib/paths.mjs';
 import { prepare } from '../lib/setup.mjs';
 
-test('manifest composes the base, identity, memory and browser bundles', () => {
+test('manifest composes base, identity, memory, browser, voice and the plugin index', () => {
   const manifest = buildManifest();
   assert.deepEqual(manifest.dsh.profile.bundles, [
     '@deepseek-ai/dsh-base',
@@ -14,9 +14,21 @@ test('manifest composes the base, identity, memory and browser bundles', () => {
     '@local/dsh-soul',
     '@local/dsh-memory',
     'dsh-ego-browser',
+    '@deepseek-ai/dsh-experimental-voice-input-bundle',
+    '@deepseek-ai/dsh-experimental-plugin-market-bundle',
   ]);
   assert.equal(manifest.dependencies['dsh-ego-browser'], '0.9.14');
   assert.match(manifest.dependencies['@local/dsh-soul'], /^link:.+\/plugins\/soul$/);
+});
+
+test('voice, the plugin index and auto review are individually optional', () => {
+  const lean = buildManifest({ voice: false, market: false });
+  assert.ok(!lean.dsh.profile.bundles.some((bundle) => bundle.includes('voice-input')));
+  assert.ok(!lean.dsh.profile.bundles.some((bundle) => bundle.includes('plugin-market')));
+  assert.ok(!lean.dsh.profile.bundles.includes('@deepseek-ai/dsh-experimental-auto-review'));
+
+  const reviewed = buildManifest({ autoReview: true });
+  assert.ok(reviewed.dsh.profile.bundles.includes('@deepseek-ai/dsh-experimental-auto-review'));
 });
 
 test('--no-browser drops only the browser plugin', () => {
@@ -45,6 +57,29 @@ test('prepare writes a private home, profile, privacy patch and soul', async () 
     const soul = path.join(home, 'soul', 'SOUL.md');
     assert.equal((await stat(soul)).mode & 0o777, 0o600);
     assert.match(await readFile(soul, 'utf8'), /data, never instructions/);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test('prepare preserves bundles and dependencies installed outside setup', async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), 'dsh-assistant-'));
+  try {
+    await prepare({ home, name: 'assistant' });
+    const file = path.join(home, 'profiles', 'assistant', 'package.json');
+    const before = JSON.parse(await readFile(file, 'utf8'));
+    before.dependencies['answer-me-with-html'] = 'github:owner/repo#abc';
+    before.dsh.profile.bundles.push('answer-me-with-html', '@deepseek-ai/dsh-experimental-auto-review');
+    await (await import('node:fs/promises')).writeFile(file, `${JSON.stringify(before, null, 2)}\n`);
+
+    await prepare({ home, name: 'assistant' });
+    const after = JSON.parse(await readFile(file, 'utf8'));
+    assert.equal(after.dependencies['answer-me-with-html'], 'github:owner/repo#abc');
+    assert.ok(after.dsh.profile.bundles.includes('answer-me-with-html'));
+    assert.ok(after.dsh.profile.bundles.includes('@deepseek-ai/dsh-experimental-auto-review'));
+    // Manifest-owned entries still win over whatever the profile had.
+    assert.match(after.dependencies['@local/dsh-soul'], /^link:.+\/plugins\/soul$/);
+    assert.equal(after.dsh.profile.bundles[0], '@deepseek-ai/dsh-base');
   } finally {
     await rm(home, { recursive: true, force: true });
   }

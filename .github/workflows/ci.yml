@@ -21,7 +21,7 @@ jobs:
       - name: module syntax
         run: |
           set -e
-          for f in $(find . -path ./node_modules -prune -o -name '*.mjs' -print | sort); do
+          for f in $(find . -path ./node_modules -prune -o \( -name '*.mjs' -o -name '*.js' \) -print | sort); do
             node --check "$f"
           done
       - name: no secrets
