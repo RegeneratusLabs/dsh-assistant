@@ -25,6 +25,8 @@ const {
   validateReview,
   writeSkill,
   countSkills,
+  summarizeReview,
+  publishNotice,
 } = await import('./index.js');
 
 let failures = 0;
@@ -39,7 +41,7 @@ function check(label, condition, detail = '') {
 }
 
 /** A fresh fake Cordis context that records its session listeners. */
-function makeCtx(stream) {
+function makeCtx(stream, notices = null) {
   const handlers = [];
   const ctx = {
     on: (event, handler) => {
@@ -48,6 +50,8 @@ function makeCtx(stream) {
     },
     effect: (fn) => fn(),
     llm: { stream },
+    get: (service) =>
+      service === 'jobs' && notices ? { start: async (spec) => { notices.push(spec); } } : undefined,
   };
   return { ctx, emit: (session, type, data) => handlers.forEach((handler) => handler(session, { type, data })) };
 }
@@ -112,7 +116,8 @@ globalThis.fetch = async () => {
   throw new Error('semantic memory is off; no request expected');
 };
 const calls = [];
-const firstCtx = makeCtx(replyingWith({ memory: [{ target: 'user', text: 'Keeps answers under 100 words.' }], forget: [], skill: null }, calls));
+const notices = [];
+const firstCtx = makeCtx(replyingWith({ memory: [{ target: 'user', text: 'Keeps answers under 100 words.' }], forget: [], skill: null }, calls), notices);
 apply(firstCtx.ctx, { minUserChars: 10, minIntervalMs: 0, maxPerHour: 100, provider: 'test', model: 'test' });
 turn(firstCtx.emit, session, 'From now on, keep answers under 100 words.');
 await whenIdle();
@@ -129,6 +134,20 @@ check('memory entry was written', profile.user.some((entry) => entry.includes('1
 const audit = readFileSync(path.join(home, 'learning', 'audit.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line));
 check('audit records the write', audit.at(-1).memory.length === 1 && audit.at(-1).ok === true);
 check('no network when semantic is off', fetches === 0, String(fetches));
+check('a learning notice job is registered', notices.length === 1 && notices[0].kind === 'learn', JSON.stringify(notices.map((notice) => notice.kind)));
+const noticeOutcome = notices[0] ? await notices[0].run().done : null;
+check(
+  'the notice carries a one-line summary',
+  noticeOutcome?.status === 'completed' && noticeOutcome.detail.includes('1 memory'),
+  JSON.stringify(noticeOutcome),
+);
+
+check(
+  'summarizeReview formats entries and skills',
+  summarizeReview({ memory: [{ target: 'user', text: 'a' }], forget: 1, skill: { name: 'x' } }) === 'Learned 1 memory · forgot 1 · skill x',
+);
+check('summarizeReview stays empty for a quiet review', summarizeReview({ memory: [], forget: 0, skill: null }) === '');
+check('publishNotice is a no-op without a registry', (await publishNotice({ get: () => undefined }, 's', 'x')) === false);
 
 // ── rate limit: the second turn in the window is not reviewed ──────────────
 resetState();

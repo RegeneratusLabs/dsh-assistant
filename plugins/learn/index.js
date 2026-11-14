@@ -338,6 +338,47 @@ function audit(config, entry) {
   appendFileSync(config.auditPath, `${JSON.stringify({ at: new Date().toISOString(), ...entry })}\n`, { mode: 0o600 });
 }
 
+/**
+ * Surface a completed review in the session's existing background-job roster.
+ *
+ * The learn plugin cannot draw in the transcript without shipping browser code,
+ * but the job list is already a Session-owned visual: a settled row with the
+ * label and a one-line detail. A job is created only after a review changed
+ * something, so quiet turns stay quiet; when no controller serves the session
+ * the call fails and learning continues without the notice.
+ * @param ctx - Cordis context.
+ * @param sessionId - owning session.
+ * @param detail - one-line summary.
+ * @returns whether the notice was registered.
+ */
+export async function publishNotice(ctx, sessionId, detail) {
+  const registry = typeof ctx.get === 'function' ? ctx.get('jobs') : undefined;
+  if (!registry || typeof registry.start !== 'function') return false;
+  try {
+    await registry.start({
+      kind: 'learn',
+      label: 'Learning review',
+      owner: sessionId,
+      run() {
+        return { cancel() {}, done: Promise.resolve({ status: 'completed', detail }) };
+      },
+    });
+    return true;
+  } catch (error) {
+    warnOnce('notice', `learning notice unavailable: ${String((error && error.message) || error).slice(0, 140)}`);
+    return false;
+  }
+}
+
+/** A one-line, bounded summary of what a review changed. */
+export function summarizeReview(applied) {
+  const parts = [];
+  if (applied.memory.length > 0) parts.push(`${applied.memory.length} memor${applied.memory.length === 1 ? 'y' : 'ies'}`);
+  if (applied.forget > 0) parts.push(`forgot ${applied.forget}`);
+  if (applied.skill) parts.push(`skill ${applied.skill.name}`);
+  return parts.length > 0 ? `Learned ${parts.join(' · ')}`.slice(0, 200) : '';
+}
+
 /** The semantic write config, or null when Hindsight is not configured. */
 function semanticConfig(config) {
   const status = readJson(path.join(config.home, 'memory', 'status.json'));
@@ -491,6 +532,8 @@ async function review(ctx, turn, config) {
     skill: applied.skill,
     errors: result.errors,
   });
+  const detail = summarizeReview(applied);
+  if (detail) await publishNotice(ctx, turn.sessionId, detail);
 }
 
 /** Skill names only; the review never needs their bodies. */
