@@ -419,6 +419,9 @@ async function review(ctx, turn, config) {
   const stream = ctx.llm.stream({
     provider: route.provider,
     model: route.model,
+    // The routed provider needs the session identity on the request; the loop
+    // stamps it for conversation calls and an auxiliary call must do the same.
+    sessionId: turn.sessionId,
     system: systemPrompt(config.maxMemory),
     messages: [{ role: 'user', content: [{ type: 'text', text: input }] }],
     maxTokens: config.maxTokens,
@@ -430,7 +433,10 @@ async function review(ctx, turn, config) {
     else if (chunk.type === 'finish') finish = chunk.reason;
   }
   if (!finish || finish.kind !== 'stop') {
-    audit(config, { session: turn.sessionId, ok: false, error: `finish ${finish?.kind ?? 'missing'}` });
+    const failure = finish?.failure;
+    const detail = failure ? `${failure.code ?? 'LLM_ERROR'}: ${String(failure.message ?? '').slice(0, 200)}` : `finish ${finish?.kind ?? 'missing'}`;
+    warnOnce(`review-finish:${detail.slice(0, 60)}`, `review call failed: ${detail}`);
+    audit(config, { session: turn.sessionId, ok: false, error: detail });
     return;
   }
 
