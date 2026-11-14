@@ -1,0 +1,19 @@
+# Bundle patch for the assistant memory layer: one Host row that reads the
+# curated profile file, injects it as a bounded prompt section, and registers the
+# memory_remember / memory_recall / memory_forget tools over the Hindsight REST API.
+#
+# A profile's own patch layer may override the row by id:
+#
+#   - id: dsh-memory
+#     config:
+#       apiUrl: http://127.0.0.1:9177      # default
+#       bankId: dsh-assistant               # default; NEVER point this at Hermes' `another-agent` bank
+#       profilePath: ~/.dsh-assistant/memory/profile.json
+#       userBudget: 2200                   # chars, about-the-user track
+#       agentBudget: 4000                  # chars, notes-to-self track
+#       recallMaxTokens: 800
+#       timeoutMs: 4000
+#       inject: true                       # false = tools only, no prompt block
+- insert:
+    - id: dsh-memory
+      name: '@local/dsh-memory'

@@ -1,0 +1,33 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: tests
+        run: npm test
+      - name: module syntax
+        run: |
+          set -e
+          for f in $(find . -path ./node_modules -prune -o -name '*.mjs' -print | sort); do
+            node --check "$f"
+          done
+      - name: no secrets
+        run: |
+          set -e
+          if grep -rInE 'sk-[A-Za-z0-9]{16,}|gho_[A-Za-z0-9]{20,}|BEGIN (RSA |OPENSSH |EC )?PRIVATE KEY' \
+               --include='*.mjs' --include='*.js' --include='*.yml' --include='*.json' --include='*.md' .; then
+            echo '::error::secret-shaped string found'; exit 1
+          fi

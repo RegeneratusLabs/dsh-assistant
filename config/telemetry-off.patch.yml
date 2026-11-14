@@ -1,0 +1,17 @@
+# Telemetry egress is off. These rows replace the shipped defaults and are read
+# after every bundle, so an environment variable cannot turn them back on.
+#
+# - session-log-deepseek / plugin-package-inventory-deepseek attach prompt and
+#   package metadata to official DeepSeek model requests.
+# - session-telemetry-otel would export session logs to a collector.
+- id: session-log-deepseek
+  config:
+    enabled: false
+
+- id: plugin-package-inventory-deepseek
+  config:
+    enabled: false
+
+- id: session-telemetry-otel
+  config:
+    mode: DISABLED
