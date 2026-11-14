@@ -53,6 +53,8 @@ node bin/assistant.mjs doctor --home ~/.dsh-assistant --name personal
 - Data lives in `~/.dsh-assistant/`, mode 0700: soul, memory, sessions, credentials.
 - Telemetry egress is off by default; the profile patch is `config/telemetry-off.patch.yml`.
 - Memory is local. Semantic memory is off unless you set `apiUrl` on the memory row.
+- Semantic memory is scoped to its own Hindsight bank (`dsh-assistant`). The plugin refuses
+  any other bank, including another assistant's `another-agent` or `another-agent-*` banks.
 - The browser plugin drives your installed Chrome and can act as you on sites.
   Treat it as consequential.
 
@@ -67,5 +69,6 @@ No core patches. No second implementation of something that already works.
 ## Tests
 
 ```sh
-npm test
+npm test          # hermetic
+npm run test:live # read-only against the local Hindsight daemon
 ```

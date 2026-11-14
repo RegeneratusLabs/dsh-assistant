@@ -56,7 +56,13 @@ const ctx = {
   tools: { register: (tool) => registered.push(tool) },
 };
 
-apply(ctx, { bankId: 'test-bank', apiUrl: 'http://127.0.0.1:9177', profilePath: file });
+apply(ctx, {
+  bankId: 'test-bank',
+  apiUrl: 'http://127.0.0.1:9177',
+  profilePath: file,
+  allowBanks: 'test-bank',
+  probe: false,
+});
 
 check('prompt section registered', section !== null && section.name === 'memory:profile');
 // The registry renders a function-valued `text` per request; a string here would
@@ -96,8 +102,25 @@ const remember = registered.find((t) => t.name === 'memory_remember');
 const recall = registered.find((t) => t.name === 'memory_recall');
 const forget = registered.find((t) => t.name === 'memory_forget');
 
+const denied = [];
+const deniedCtx = {
+  systemPrompt: { getSectionOrder: () => 0, section: () => () => {} },
+  effect: (fn) => fn(),
+  tools: { register: (tool) => denied.push(tool) },
+};
+apply(deniedCtx, { bankId: 'another-agent', apiUrl: 'http://127.0.0.1:9177', profilePath: file, probe: false });
+check('a foreign bank is refused', denied.length === 0, denied.map((t) => t.name).join(','));
+
 const remembered = await remember.execute({ text: 'Runs a small apple orchard near Testville.', target: 'user' });
 check('remember writes the profile', readProfile(file).profile.user.some((entry) => entry.includes('apple')), remembered.message);
+check('remember renders a usage line', /Usage: user \d+\/2200 \(\d+%\)/.test(sectionText()), sectionText());
+const duplicate = await remember.execute({ text: '  runs a small apple orchard near Testville. ', target: 'user' });
+check('duplicate entries are refused', duplicate.message.includes('Already'), duplicate.message);
+check(
+  'duplicate did not grow the track',
+  readProfile(file).profile.user.filter((entry) => entry.includes('apple')).length === 1,
+  JSON.stringify(readProfile(file).profile.user),
+);
 check('remember is visible in the same-session prompt block', sectionText().includes('apple'), sectionText());
 check('remember retains to Hindsight', calls.some((call) => String(call.url).endsWith('/memories')), JSON.stringify(calls));
 check('remember tags the fact', calls.some((call) => String(call.body).includes('"tags":["user"]')));

@@ -5,10 +5,8 @@
  * `@vectorize-io/hindsight-coding-agents` is a *coding-agent* integration: per-repo
  * banks, git-history ingest, knowledge pages about a codebase, and a ~12 KB
  * tool-usage manual injected on the first prompt (which then rides in every
- * request). Measured on this host: 3,175 tokens/step, ~75% of it the manual, for a
- * question that never touched a repository. A assistant has no repo, no
- * git history and no codebase pages — so the manual is pure overhead and the
- * knowledge-page tier stays empty.
+ * request). A assistant has no repo, no git history and no codebase
+ * pages — so the manual is pure overhead and the knowledge-page tier stays empty.
  *
  * What the field (Hermes / OpenClaw / Letta) actually converged on is three tiers:
  *
@@ -36,10 +34,20 @@
  *  - No deps: node builtins + global fetch only, so the bundle resolves from any
  *    profile without a package install.
  *
+ * SAFETY
+ *  - A bank allowlist plus a hard denylist. The assistant must never
+ *    read or write another agent's bank (`another-agent`, `another-agent*`), even if a config or
+ *    an environment variable points at it. Refusing to register is safer than
+ *    silently touching the wrong memory.
+ *  - Every semantic failure is recorded to memory/alerts.json and surfaces as a
+ *    warning line in the prompt block, because a silent retain failure looks
+ *    exactly like "the assistant forgot".
+ *
  * @module @local/dsh-memory
  */
 
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -56,12 +64,26 @@ const SECTION_NAME = 'memory:profile';
 const DEFAULTS = {
   userBudget: 2200,
   agentBudget: 4000,
-  timeoutMs: 4000,
+  timeoutMs: 10000,
   recallMaxTokens: 800,
+  minScore: 0.15,
 };
+
+/** Banks this assistant may touch unless the row explicitly widens the list. */
+export const ALLOWED_BANKS = ['dsh-assistant', 'dsh-assistant'];
+
+/**
+ * Banks that are never ours, whatever the config says. `another-agent` is another
+ * person's Hermes home; `another-agent` is the user's personal Hermes. Both are local
+ * services, so a bug here would not be a remote incident — it would be worse.
+ */
+export const DENIED_BANKS = ['another-agent', 'another-agent'];
 
 /** Hindsight fact kinds this plugin writes. */
 const TARGETS = ['user', 'agent', 'fact'];
+
+/** How much semantic failure history the alert file keeps. */
+const ALERT_LIMIT = 10;
 
 /** Warnings are once per process per cause (the Host log is the local sink). */
 const warned = new Set();
@@ -111,6 +133,47 @@ function positiveInt(value, fallback, ceiling) {
 }
 
 /**
+ * A number inside a closed range, else the fallback.
+ * @param value - configured value.
+ * @param fallback - default when unusable.
+ * @param min - lower bound.
+ * @param max - upper bound.
+ * @returns the effective number.
+ */
+function numberInRange(value, fallback, min, max) {
+  const number = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.min(max, Math.max(min, number));
+}
+
+/**
+ * A comma-separated list, or the fallback.
+ * @param value - configured value.
+ * @param fallback - entries when absent.
+ * @returns trimmed non-empty entries.
+ */
+function list(value, fallback) {
+  if (typeof value !== 'string' || value.trim().length === 0) return fallback;
+  return value.split(',').map((entry) => entry.trim()).filter(Boolean);
+}
+
+/**
+ * May this bank be used?
+ *
+ * The denylist is checked first and ignores the allowlist entirely: widening
+ * `allowBanks` must never be able to reach another agent's memory.
+ * @param bankId - resolved bank.
+ * @param allow - configured allowlist.
+ * @returns whether the bank is ours.
+ */
+export function bankAllowed(bankId, allow = ALLOWED_BANKS) {
+  const id = String(bankId || '').trim();
+  if (id.length === 0) return false;
+  if (DENIED_BANKS.some((denied) => id === denied || id.startsWith(`${denied}-`))) return false;
+  return allow.includes(id);
+}
+
+/**
  * Resolve the profile file: row `config.profilePath`, else
  * `$DSH_MEMORY_PROFILE`, else `$DSH_HOME/memory/profile.json`. `~/` expands and
  * relative paths resolve under `$DSH_HOME`, so the loader never depends on cwd.
@@ -146,8 +209,8 @@ export function readProfile(file) {
     const parsed = JSON.parse(raw);
     const profile = emptyProfile();
     for (const track of ['user', 'agent']) {
-      const list = Array.isArray(parsed && parsed[track]) ? parsed[track] : [];
-      profile[track] = list.filter((entry) => typeof entry === 'string' && entry.trim().length > 0).map((entry) => entry.trim());
+      const listValue = Array.isArray(parsed && parsed[track]) ? parsed[track] : [];
+      profile[track] = listValue.filter((entry) => typeof entry === 'string' && entry.trim().length > 0).map((entry) => entry.trim());
     }
     return { profile };
   } catch (error) {
@@ -157,6 +220,10 @@ export function readProfile(file) {
 
 /**
  * Persist the profile atomically (write-then-rename) with 0600 permissions.
+ *
+ * The previous file is kept as `profile.json.bak` for one generation: learning
+ * writes happen without an approval prompt, so the last good state must be one
+ * copy away.
  * @param file - absolute path.
  * @param profile - the two curated tracks.
  * @returns nothing; throws on an unwritable path.
@@ -164,6 +231,11 @@ export function readProfile(file) {
 export function writeProfile(file, profile) {
   const dir = path.dirname(file);
   mkdirSync(dir, { recursive: true, mode: 0o700 });
+  try {
+    copyFileSync(file, `${file}.bak`);
+  } catch {
+    // First write, or an unreadable previous file: no backup to keep.
+  }
   const temp = `${file}.${process.pid}.tmp`;
   writeFileSync(temp, `${JSON.stringify({ user: profile.user, agent: profile.agent }, null, 2)}\n`, { mode: 0o600 });
   renameSync(temp, file);
@@ -174,17 +246,37 @@ function trackChars(entries) {
   return entries.reduce((total, entry) => total + entry.length + 3, 0); // 3 = "- " + newline
 }
 
+/** Normalize an entry for duplicate comparison. */
+export function normalizeEntry(text) {
+  return String(text || '').trim().replace(/\s+/g, ' ');
+}
+
+/** Percentage of a budget, rounded, never above 100 in the rendered line. */
+function usage(used, budget) {
+  const percent = budget > 0 ? Math.min(100, Math.round((used / budget) * 100)) : 0;
+  return `${used}/${budget} (${percent}%)`;
+}
+
 /**
  * Render the bounded prompt block.
  *
- * The block is intentionally small: a heading, the two tracks, and one line of
+ * The block is intentionally small: a heading, an optional usage line, the two
+ * tracks, a warning only when semantic memory recently failed, and one line of
  * usage guidance. Empty tracks are omitted so a fresh install costs ~40 tokens
  * rather than a header pair with nothing under it.
  * @param profile - the two curated tracks.
+ * @param options - budgets, whether the semantic tier is on, and whether to warn.
  * @returns the section text (never empty; always carries the usage line).
  */
-export function renderProfile(profile) {
+export function renderProfile(profile, options = {}) {
+  const budgets = options.budgets ?? DEFAULTS;
+  const semantic = options.semantic !== false;
   const lines = ['<memory_profile>'];
+  if (profile.user.length > 0 || profile.agent.length > 0) {
+    lines.push(
+      `Usage: user ${usage(trackChars(profile.user), budgets.userBudget)} · agent ${usage(trackChars(profile.agent), budgets.agentBudget)}`,
+    );
+  }
   if (profile.user.length > 0) {
     lines.push('## About the user');
     for (const entry of profile.user) lines.push(`- ${entry}`);
@@ -193,9 +285,14 @@ export function renderProfile(profile) {
     lines.push('## Notes to self');
     for (const entry of profile.agent) lines.push(`- ${entry}`);
   }
+  if (options.alert) {
+    lines.push('Semantic memory’s last write failed — say so if the answer depends on it.');
+  }
   lines.push(
     'Curated memory you maintain with `memory_remember` / `memory_forget`. Keep entries short and current; delete what stopped being true.',
-    'Anything not in this block: call `memory_recall` before guessing, and `memory_remember` when the user states a durable preference, decision or fact.',
+    semantic
+      ? 'Anything not in this block: call `memory_recall` before guessing, and `memory_remember` when the user states a durable preference, decision or fact.'
+      : 'Anything not in this block: search past sessions before guessing, and `memory_remember` when the user states a durable preference, decision or fact.',
     '</memory_profile>',
   );
   return lines.join('\n');
@@ -209,12 +306,13 @@ export function renderProfile(profile) {
  * is what makes `memory_remember` / `memory_forget` visible in the same session.
  * Without it the block stays frozen until the Host restarts.
  * @param file - absolute profile path.
+ * @param options - budgets, semantic mode, and the alert flag.
  * @returns the rendered block for the file's current contents.
  */
-export function profileSectionText(file) {
+export function profileSectionText(file, options = {}) {
   const { profile, error } = readProfile(file);
   if (error) warnOnce(`section:${file}`, `cannot read ${file} (${error}); injecting an empty memory profile`);
-  return renderProfile(profile);
+  return renderProfile(profile, options);
 }
 
 /**
@@ -244,12 +342,193 @@ function budgetOverflow(entries, budget, incoming) {
  * @returns model-facing text.
  */
 function overflowMessage(track, report) {
-  const list = report.entries.map((entry) => `- ${entry}`).join('\n');
+  const entries = report.entries.map((entry) => `- ${entry}`).join('\n');
   return [
     `The ${track} memory track is full: ${report.used}/${report.budget} chars used, this entry needs ${report.overflow} more chars freed.`,
-    `Current entries:\n${list || '(none)'}`,
+    `Current entries:\n${entries || '(none)'}`,
     `Consolidate or remove entries to free at least ${report.overflow} chars, then retry. Do not pad — merge related entries.`,
   ].join('\n\n');
+}
+
+/**
+ * Apply one atomic add/forget batch to the curated profile.
+ *
+ * Forgets are matched case-insensitively by substring, then adds are checked
+ * for duplicates and budget. The file is written once and only when the whole
+ * batch fits, so a caller can never leave a half-applied consolidation.
+ * @param file - absolute profile path.
+ * @param budgets - `{user, agent}` character budgets.
+ * @param batch - `{add: [{target, text}], forget: [{target, text}]}`.
+ * @returns `{ok, added, removed, message}`; `ok:false` means nothing was written.
+ */
+export function applyMemoryBatch(file, budgets, batch = {}) {
+  const { profile, error } = readProfile(file);
+  if (error) return { ok: false, added: [], removed: 0, message: `Memory profile is unreadable (${error}); nothing was changed.` };
+  const limits = {
+    user: Number.isFinite(Number(budgets.user)) ? Number(budgets.user) : DEFAULTS.userBudget,
+    agent: Number.isFinite(Number(budgets.agent)) ? Number(budgets.agent) : DEFAULTS.agentBudget,
+  };
+  const known = new Set([...profile.user, ...profile.agent].map((entry) => entry.toLowerCase()));
+
+  let removed = 0;
+  for (const item of batch.forget ?? []) {
+    const target = item.target === 'user' ? 'user' : 'agent';
+    const needle = normalizeEntry(item.text).toLowerCase();
+    if (needle.length === 0) continue;
+    const kept = profile[target].filter((entry) => !entry.toLowerCase().includes(needle));
+    removed += profile[target].length - kept.length;
+    for (const dropped of profile[target]) if (!kept.includes(dropped)) known.delete(dropped.toLowerCase());
+    profile[target] = kept;
+  }
+
+  const added = [];
+  for (const item of batch.add ?? []) {
+    const text = normalizeEntry(item.text);
+    if (text.length === 0) continue;
+    const target = item.target === 'user' ? 'user' : 'agent';
+    if (known.has(text.toLowerCase())) continue;
+    const overflow = budgetOverflow(profile[target], limits[target], text);
+    if (overflow) return { ok: false, added: [], removed: 0, message: overflowMessage(target, overflow), profile };
+    profile[target].push(text);
+    known.add(text.toLowerCase());
+    added.push({ target, text });
+  }
+
+  if (added.length > 0 || removed > 0) writeProfile(file, profile);
+  return { ok: true, added, removed, profile, message: `Applied ${added.length} addition(s) and ${removed} removal(s).` };
+}
+
+/** Hindsight provides scores under a small shape; treat an absent score as relevant. */
+function scoreOf(result) {
+  const scores = result && result.scores;
+  if (!scores || typeof scores !== 'object') return 1;
+  for (const key of ['final', 'reranker', 'retrieval']) {
+    if (typeof scores[key] === 'number') return scores[key];
+  }
+  return 1;
+}
+
+/** Read a small JSON document, returning undefined when absent or malformed. */
+function readJson(file) {
+  try {
+    return JSON.parse(readFileSync(file, 'utf8'));
+  } catch {
+    return undefined;
+  }
+}
+
+/** Write a small JSON document atomically with 0600 permissions. */
+function writeJson(file, value) {
+  mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  const temp = `${file}.${process.pid}.tmp`;
+  writeFileSync(temp, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
+  renameSync(temp, file);
+}
+
+/**
+ * Record one semantic failure.
+ *
+ * The alert is what turns a silent retain failure (a depleted key, a dead
+ * daemon) into something the next prompt can mention.
+ * @param config - resolved config.
+ * @param scope - 'retain' | 'recall'.
+ * @param message - failure text.
+ */
+function recordAlert(config, scope, message) {
+  const current = readJson(config.alertsPath);
+  const alerts = Array.isArray(current?.alerts) ? current.alerts : [];
+  alerts.push({ at: new Date().toISOString(), scope, message: String(message || '').slice(0, 400) });
+  writeJson(config.alertsPath, { version: 1, alerts: alerts.slice(-ALERT_LIMIT) });
+  updateStatus(config, { healthy: false, lastError: String(message || '').slice(0, 400) });
+}
+
+/** Remove resolved alerts for one scope. */
+function clearAlert(config, scope) {
+  const current = readJson(config.alertsPath);
+  if (!Array.isArray(current?.alerts)) return;
+  const alerts = current.alerts.filter((alert) => alert.scope !== scope);
+  if (alerts.length === 0) {
+    try {
+      writeJson(config.alertsPath, { version: 1, alerts: [] });
+    } catch {
+      // Losing the alert file is not worth failing a turn over.
+    }
+    return;
+  }
+  writeJson(config.alertsPath, { version: 1, alerts });
+}
+
+/**
+ * Whether a semantic failure is worth telling the prompt about.
+ * @param config - resolved config.
+ * @returns true when a retain alert exists.
+ */
+export function hasRetainAlert(config) {
+  const current = readJson(config.alertsPath);
+  return Array.isArray(current?.alerts) && current.alerts.some((alert) => alert.scope === 'retain');
+}
+
+/**
+ * Merge a patch into memory/status.json.
+ *
+ * Doctor and the startup log read this instead of parsing YAML, so the plugin
+ * stays the single source of truth for its own resolved configuration.
+ * @param config - resolved config.
+ * @param patch - fields to merge.
+ */
+function updateStatus(config, patch) {
+  const previous = readJson(config.statusPath) ?? {};
+  writeJson(config.statusPath, {
+    version: 1,
+    bank: config.bankId,
+    apiUrl: config.apiUrl,
+    semantic: config.apiUrl !== '',
+    checkedAt: new Date().toISOString(),
+    ...previous,
+    ...patch,
+  });
+}
+
+/**
+ * Probe Hindsight health and bank stats, then record them.
+ *
+ * Best effort: a failed probe records the failure and never throws into boot.
+ * @param config - resolved config.
+ * @returns whether the daemon answered healthy.
+ */
+export async function probeHealth(config) {
+  const started = Date.now();
+  try {
+    const response = await fetch(`${config.apiUrl.replace(/\/+$/, '')}/health`, { signal: AbortSignal.timeout(2000) });
+    const body = await response.json().catch(() => ({}));
+    const healthy = response.ok && body.status === 'healthy';
+    updateStatus(config, {
+      healthy,
+      health: body.status ?? 'unknown',
+      database: body.database ?? null,
+      probeMs: Date.now() - started,
+    });
+    if (!healthy) return false;
+    try {
+      const stats = await hindsightFetch(config, `/v1/default/banks/${encodeURIComponent(config.bankId)}/stats`);
+      const previous = readJson(config.statusPath) ?? {};
+      updateStatus(config, {
+        facts: stats.total_nodes ?? null,
+        failedOperations: stats.failed_operations ?? null,
+        // Historical failures never disappear, so the baseline is what makes a
+        // new failure visible without crying wolf on every doctor run.
+        failedOperationsBaseline: previous.failedOperationsBaseline ?? stats.failed_operations ?? null,
+        pendingOperations: stats.pending_operations ?? null,
+        lastWriteAt: stats.last_memory_write_at ?? null,
+      });
+    } catch (error) {
+      warnOnce(`stats:${config.bankId}`, `cannot read bank stats: ${String((error && error.message) || error)}`);
+    }
+    return true;
+  } catch (error) {
+    updateStatus(config, { healthy: false, health: 'unreachable', lastError: String((error && error.message) || error) });
+    return false;
+  }
 }
 
 /**
@@ -267,46 +546,90 @@ async function hindsightFetch(config, pathname, init) {
     signal: AbortSignal.timeout(config.timeoutMs),
   });
   const text = await response.text();
-  if (!response.ok) throw new Error(`Hindsight ${response.status} on ${pathname}: ${text.slice(0, 300)}`);
+  if (!response.ok) {
+    const error = new Error(`Hindsight ${response.status} on ${pathname}: ${text.slice(0, 300)}`);
+    error.status = response.status;
+    throw error;
+  }
   return text.length > 0 ? JSON.parse(text) : {};
 }
 
-/**
- * Store one fact in the configured bank. Fire-and-forget: a memory write must
- * never fail a turn, so errors are logged and swallowed.
- * @param config - resolved plugin config.
- * @param content - the fact text.
- * @param tags - Hindsight tags (the curated tracks double as tags).
- */
 /** Semantic recall is available only when an API URL is configured. */
 function semanticEnabled(config) {
   return config.apiUrl !== '';
 }
 
-async function retainFact(config, content, tags) {
-  if (!semanticEnabled(config)) return;
-  try {
-    await hindsightFetch(config, `/v1/default/banks/${encodeURIComponent(config.bankId)}/memories`, {
-      method: 'POST',
-      body: JSON.stringify({ items: [{ content, tags }], async: true }),
-    });
-  } catch (error) {
-    warnOnce(`retain:${String(error && error.message).slice(0, 80)}`, `retain failed (memory still saved locally): ${String(error && error.message)}`);
-  }
+/** A transient failure: network, timeout, 408, 429, or 5xx. */
+function retryable(error) {
+  const status = error && error.status;
+  if (typeof status === 'number') return status === 408 || status === 429 || status >= 500;
+  return true;
 }
 
 /**
- * Recall facts by meaning.
+ * Store one fact in the configured bank.
+ *
+ * The client-supplied operation id makes the retry idempotent: re-submitting
+ * after a lost acknowledgement returns the original operation instead of
+ * extracting the same fact twice.
+ * @param config - resolved config.
+ * @param content - the fact text.
+ * @param tags - Hindsight tags (the curated tracks double as tags).
+ * @returns `{ok, operationId?, message?}`; never throws.
+ */
+async function retainFact(config, content, tags) {
+  if (!semanticEnabled(config)) return { ok: true, skipped: true };
+  if (!bankAllowed(config.bankId, config.allowBanks)) return { ok: false, message: `bank ${config.bankId} is not allowed` };
+  const operationId = randomUUID();
+  const body = JSON.stringify({
+    items: [{ content, context: 'Assistant conversation with the user', tags }],
+    async: true,
+    operation_id: operationId,
+  });
+  let lastError;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const result = await hindsightFetch(config, `/v1/default/banks/${encodeURIComponent(config.bankId)}/memories`, {
+        method: 'POST',
+        body,
+      });
+      const id = result.operation_id ?? operationId;
+      clearAlert(config, 'retain');
+      updateStatus(config, { healthy: true, lastRetainAt: new Date().toISOString(), lastOperationId: id });
+      return { ok: true, operationId: id };
+    } catch (error) {
+      lastError = error;
+      if (attempt === 1 || !retryable(error)) break;
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+  }
+  recordAlert(config, 'retain', String((lastError && lastError.message) || lastError));
+  warnOnce(`retain:${String((lastError && lastError.message) || '').slice(0, 60)}`, `retain failed: ${String((lastError && lastError.message) || lastError)}`);
+  return { ok: false, message: String((lastError && lastError.message) || lastError) };
+}
+
+/**
+ * Recall facts by meaning, dropping weak matches so noise stays out of context.
  * @param config - resolved plugin config.
  * @param query - natural-language query.
  * @returns the result list (may be empty).
  */
 async function recallFacts(config, query) {
-  const body = await hindsightFetch(config, `/v1/default/banks/${encodeURIComponent(config.bankId)}/memories/recall`, {
-    method: 'POST',
-    body: JSON.stringify({ query, max_tokens: config.recallMaxTokens }),
-  });
-  return Array.isArray(body.results) ? body.results : [];
+  const started = Date.now();
+  try {
+    const body = await hindsightFetch(config, `/v1/default/banks/${encodeURIComponent(config.bankId)}/memories/recall`, {
+      method: 'POST',
+      body: JSON.stringify({ query, max_tokens: config.recallMaxTokens }),
+    });
+    const results = Array.isArray(body.results) ? body.results : [];
+    const kept = results.filter((result) => scoreOf(result) >= config.minScore);
+    clearAlert(config, 'recall');
+    updateStatus(config, { healthy: true, lastRecallAt: new Date().toISOString(), lastRecallMs: Date.now() - started, lastRecallCount: kept.length });
+    return kept;
+  } catch (error) {
+    recordAlert(config, 'recall', String((error && error.message) || error));
+    throw error;
+  }
 }
 
 /**
@@ -316,16 +639,24 @@ async function recallFacts(config, query) {
  */
 function resolveConfig(config) {
   const raw = config || {};
+  const profilePath = resolveProfilePath(raw);
+  const dir = path.dirname(profilePath);
   return {
     // Empty means semantic memory is not configured. The bounded profile block
     // and the tools still work; Hindsight is opt-in, never a first-run dependency.
     apiUrl: setting(raw.apiUrl) ?? setting(process.env.HINDSIGHT_API_URL) ?? '',
     bankId: setting(raw.bankId) ?? setting(process.env.HINDSIGHT_BANK) ?? 'dsh-assistant',
-    profilePath: resolveProfilePath(raw),
+    profilePath,
+    dir,
+    statusPath: path.join(dir, 'status.json'),
+    alertsPath: path.join(dir, 'alerts.json'),
     userBudget: positiveInt(raw.userBudget, DEFAULTS.userBudget, 20000),
     agentBudget: positiveInt(raw.agentBudget, DEFAULTS.agentBudget, 20000),
     timeoutMs: positiveInt(raw.timeoutMs, DEFAULTS.timeoutMs, 30000),
     recallMaxTokens: positiveInt(raw.recallMaxTokens, DEFAULTS.recallMaxTokens, 4000),
+    minScore: numberInRange(raw.minScore, DEFAULTS.minScore, 0, 1),
+    allowBanks: list(raw.allowBanks, ALLOWED_BANKS),
+    probe: raw.probe !== false,
     inject: raw.inject !== false,
   };
 }
@@ -346,6 +677,7 @@ function textResult(text) {
  * @returns the tool definitions.
  */
 function buildTools(ctx, config) {
+  const budgets = { user: config.userBudget, agent: config.agentBudget };
   const outputSchema = {
     type: 'object',
     additionalProperties: false,
@@ -376,27 +708,25 @@ function buildTools(ctx, config) {
       if (text.length === 0) return { message: 'Nothing to store: `text` was empty.' };
       const target = TARGETS.includes(args.target) ? args.target : 'fact';
 
-      if (target !== 'fact') {
-        const { profile, error } = readProfile(config.profilePath);
-        if (error) return { message: `Memory profile is unreadable (${error}); nothing was stored. Fix ${config.profilePath} first.` };
-        const budget = target === 'user' ? config.userBudget : config.agentBudget;
-        const overflow = budgetOverflow(profile[target], budget, text);
-        if (overflow) return { message: overflowMessage(target, overflow) };
-        profile[target].push(text);
-        writeProfile(config.profilePath, profile);
+      if (target === 'fact') {
+        if (!semanticEnabled(config)) {
+          return { message: 'Semantic memory is not configured, so a `fact` cannot be stored. Use target `agent` for a note that belongs in the prompt block.' };
+        }
+        const retained = await retainFact(config, text, [target]);
+        return { message: retained.ok ? 'Stored in Hindsight (recall it with memory_recall).' : 'Hindsight did not accept the fact; it was not stored (the failure is logged).' };
       }
 
+      const result = applyMemoryBatch(config.profilePath, budgets, { add: [{ target, text }] });
+      if (!result.ok) return { message: result.message };
+      if (result.added.length === 0) return { message: `Already in the ${target} track; nothing to add.` };
+
       const semantic = semanticEnabled(config);
-      if (semantic) void retainFact(config, text, [target]);
+      if (!semantic) return { message: `Stored in the ${target} track; it is in the prompt block from the next request.` };
+      const retained = await retainFact(config, text, [target]);
       return {
-        message:
-          target === 'fact'
-            ? semantic
-              ? 'Stored in Hindsight (recall it with memory_recall).'
-              : 'Semantic memory is not configured, so nothing was stored. Set apiUrl in the memory row to enable it.'
-            : semantic
-              ? `Stored in the ${target} track and in Hindsight; it is in the prompt block from the next request.`
-              : `Stored in the ${target} track; it is in the prompt block from the next request.`,
+        message: retained.ok
+          ? `Stored in the ${target} track; the semantic write is queued. It is in the prompt block from the next request.`
+          : `Stored in the ${target} track; the semantic write failed and is flagged for the next prompt.`,
       };
     },
   };
@@ -420,7 +750,7 @@ function buildTools(ctx, config) {
       if (!semanticEnabled(config)) {
         return {
           message:
-            'Semantic memory is not configured; the curated memory_profile block is always available. Set apiUrl in the memory row to enable Hindsight recall.',
+            'Semantic memory is not configured; the curated memory_profile block is always available, and past sessions can be searched. Set apiUrl in the memory row to enable Hindsight recall.',
         };
       }
       try {
@@ -428,7 +758,7 @@ function buildTools(ctx, config) {
         if (results.length === 0) return { message: `No memories matched "${query}".` };
         const lines = results.slice(0, 8).map((result, index) => {
           const when = result.occurred_start ? String(result.occurred_start).slice(0, 10) : '';
-          const score = result.scores && typeof result.scores.final === 'number' ? ` [${result.scores.final.toFixed(2)}]` : '';
+          const score = typeof result.scores?.final === 'number' ? ` [${result.scores.final.toFixed(2)}]` : '';
           return `${index + 1}. ${when ? `${when} — ` : ''}${String(result.text || '').trim()}${score}`;
         });
         return { message: `Recalled ${results.length} memories for "${query}":\n${lines.join('\n')}` };
@@ -455,17 +785,13 @@ function buildTools(ctx, config) {
     },
     output: { schema: outputSchema, render: (_args, value) => textResult(value.message) },
     async execute(args) {
-      const needle = String(args.text || '').trim().toLowerCase();
+      const needle = String(args.text || '').trim();
       const target = args.target === 'user' ? 'user' : 'agent';
       if (needle.length === 0) return { message: 'Nothing to forget: `text` was empty.' };
-      const { profile, error } = readProfile(config.profilePath);
-      if (error) return { message: `Memory profile is unreadable (${error}); nothing was removed.` };
-      const before = profile[target].length;
-      profile[target] = profile[target].filter((entry) => !entry.toLowerCase().includes(needle));
-      const removed = before - profile[target].length;
-      if (removed === 0) return { message: `No ${target} entry matched "${args.text}".` };
-      writeProfile(config.profilePath, profile);
-      return { message: `Removed ${removed} ${target} entr${removed === 1 ? 'y' : 'ies'} from the prompt block.` };
+      const result = applyMemoryBatch(config.profilePath, budgets, { forget: [{ target, text: needle }] });
+      if (!result.ok) return { message: result.message };
+      if (result.removed === 0) return { message: `No ${target} entry matched "${args.text}".` };
+      return { message: `Removed ${result.removed} ${target} entr${result.removed === 1 ? 'y' : 'ies'} from the prompt block.` };
     },
   };
 
@@ -479,6 +805,13 @@ function buildTools(ctx, config) {
  */
 export function apply(ctx, config) {
   const resolved = resolveConfig(config);
+  if (semanticEnabled(resolved) && !bankAllowed(resolved.bankId, resolved.allowBanks)) {
+    console.error(
+      `[dsh-memory] refusing bank "${resolved.bankId}": allowed banks are ${resolved.allowBanks.join(', ')}; ` +
+        'no memory tools or prompt block registered',
+    );
+    return;
+  }
   const loaded = readProfile(resolved.profilePath);
   if (loaded.error) {
     warnOnce(`profile:${resolved.profilePath}`, `cannot read ${resolved.profilePath} (${loaded.error}); starting from an empty profile`);
@@ -497,7 +830,12 @@ export function apply(ctx, config) {
       const dispose = ctx.systemPrompt.section({
         name: SECTION_NAME,
         order,
-        text: () => profileSectionText(resolved.profilePath),
+        text: () =>
+          profileSectionText(resolved.profilePath, {
+            budgets: { userBudget: resolved.userBudget, agentBudget: resolved.agentBudget },
+            semantic: semanticEnabled(resolved),
+            alert: semanticEnabled(resolved) && hasRetainAlert(resolved),
+          }),
         interpolate: false,
       });
       return () => void dispose();
@@ -506,8 +844,20 @@ export function apply(ctx, config) {
 
   for (const tool of buildTools(ctx, resolved)) ctx.tools.register(tool);
 
-  console.error(
-    `[dsh-memory] bank=${resolved.bankId} semantic=${resolved.apiUrl || 'off'} profile=${resolved.profilePath} ` +
-      `entries=${loaded.profile.user.length}user/${loaded.profile.agent.length}agent budgets=${resolved.userBudget}/${resolved.agentBudget}`,
-  );
+  if (semanticEnabled(resolved)) {
+    const cached = readJson(resolved.statusPath) ?? {};
+    updateStatus(resolved, { semantic: true });
+    if (resolved.probe) void probeHealth(resolved);
+    console.error(
+      `[dsh-memory] bank=${resolved.bankId} semantic=${resolved.apiUrl} profile=${resolved.profilePath} ` +
+        `entries=${loaded.profile.user.length}user/${loaded.profile.agent.length}agent budgets=${resolved.userBudget}/${resolved.agentBudget} ` +
+        `health=${cached.health ?? 'unknown'}`,
+    );
+  } else {
+    updateStatus(resolved, { semantic: false, healthy: null, facts: null, failedOperations: null, lastError: null });
+    console.error(
+      `[dsh-memory] bank=${resolved.bankId} semantic=off profile=${resolved.profilePath} ` +
+        `entries=${loaded.profile.user.length}user/${loaded.profile.agent.length}agent budgets=${resolved.userBudget}/${resolved.agentBudget}`,
+    );
+  }
 }
