@@ -1,0 +1,18 @@
+# Bundle patch for the browsing stack: one Host row registers `browse` (CamoFox
+# REST, tier 2) and `render_html` (chromium headless shell, tier 3). Tier 1 is
+# the native `web_fetch` tool and needs no row.
+#
+# A profile's own patch layer may override the row by id:
+#
+#   - id: dsh-browse
+#     config:
+#       camofoxUrl: http://127.0.0.1:9377   # the loopback CamoFox server
+#       userId: dsh-assistant                # persistent profile key (cookies live here)
+#       outputDir: ~/.dsh-assistant/browse   # screenshots, PDFs, downloads
+#       chromeBinary: ''                    # empty = auto-detect under ~/.cache/ms-playwright
+#       maxSnapshotChars: 12000
+#       requestTimeoutMs: 30000
+#       renderTimeoutMs: 60000
+- insert:
+    - id: dsh-browse
+      name: '@local/dsh-browse'

@@ -47,7 +47,7 @@ node bin/assistant.mjs doctor --home ~/.dsh-assistant --name personal
 | `@local/dsh-soul` | Injects `soul/SOUL.md` at prompt order 0. Edit the file; no restart config. |
 | `@local/dsh-memory` | A bounded `memory/profile.json` plus `memory_remember` / `memory_recall` / `memory_forget`. Local by default; Hindsight is opt-in. |
 | `@local/dsh-learn` | Reviews a completed turn in the background and records durable memory plus procedural skills under `$DSH_HOME`, with an audit log, caps and no approval prompt. |
-| `dsh-ego-browser` | Real Chrome tools (`ego_*`): open, click, type, screenshot, tabs. Third-party (MIT), pinned to 0.9.14. |
+| `@local/dsh-browse` | The browsing stack. Tier 1 is the host's `web_fetch`; tier 2 is `browse` over the CamoFox server (JS pages, sessions, downloads, captcha stop); tier 3 is `render_html`, chromium printing our own HTML to PDF/PNG at exact millimetres. |
 
 ## Data and privacy
 
@@ -59,8 +59,9 @@ node bin/assistant.mjs doctor --home ~/.dsh-assistant --name personal
 - Learning writes only inside `$DSH_HOME/{memory,skills,learning}`; it never edits `SOUL.md`,
   profile config or host state. Every change is recorded in `learning/audit.jsonl`, and a
   replaced skill keeps up to five previous versions under `skills/.history/`.
-- The browser plugin drives your installed Chrome and can act as you on sites.
-  Treat it as consequential.
+- The browsing stack reaches the CamoFox server on loopback only; it never spawns a browser
+  or reads a credentials store. `browse` acts as you on sites — treat its actions as
+  consequential, and stop (do not retry) when a page asks for a captcha.
 
 ## Adding a plugin
 

@@ -14,11 +14,11 @@ test('manifest composes base, identity, memory, browser, voice and the plugin in
     '@local/dsh-soul',
     '@local/dsh-memory',
     '@local/dsh-learn',
-    'dsh-ego-browser',
+    '@local/dsh-browse',
     '@deepseek-ai/dsh-experimental-voice-input-bundle',
     '@deepseek-ai/dsh-experimental-plugin-market-bundle',
   ]);
-  assert.equal(manifest.dependencies['dsh-ego-browser'], '0.9.14');
+  assert.match(manifest.dependencies['@local/dsh-browse'], /^link:.+\/plugins\/browse$/);
   assert.match(manifest.dependencies['@local/dsh-soul'], /^link:.+\/plugins\/soul$/);
 });
 
@@ -34,8 +34,8 @@ test('voice, the plugin index and auto review are individually optional', () => 
 
 test('--no-browser drops only the browser plugin', () => {
   const manifest = buildManifest({ browser: false });
-  assert.equal(manifest.dependencies['dsh-ego-browser'], undefined);
-  assert.ok(!manifest.dsh.profile.bundles.includes('dsh-ego-browser'));
+  assert.equal(manifest.dependencies['@local/dsh-browse'], undefined);
+  assert.ok(!manifest.dsh.profile.bundles.includes('@local/dsh-browse'));
   assert.ok(manifest.dsh.profile.bundles.includes('@local/dsh-memory'));
 });
 
@@ -46,7 +46,7 @@ test('prepare writes a private home, profile, privacy patch and soul', async () 
     const profile = path.join(home, 'profiles', 'assistant');
 
     const manifest = JSON.parse(await readFile(path.join(profile, 'package.json'), 'utf8'));
-    assert.ok(manifest.dsh.profile.bundles.includes('dsh-ego-browser'));
+    assert.ok(manifest.dsh.profile.bundles.includes('@local/dsh-browse'));
     assert.equal((await stat(path.join(profile, 'package.json'))).mode & 0o777, 0o600);
     assert.equal((await readFile(path.join(profile, '.npmrc'), 'utf8')).trim(), 'auto-install-peers=false');
 
