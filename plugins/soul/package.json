@@ -10,8 +10,7 @@
   },
   "files": [
     "index.js",
-    "cordis.patch.yml",
-    "README.md"
+    "cordis.patch.yml"
   ],
   "dsh": {
     "manifestVersion": 1,

@@ -6,8 +6,8 @@
 #
 #   - id: dsh-memory
 #     config:
-#       apiUrl: http://127.0.0.1:9177      # default
-#       bankId: dsh-assistant               # default; NEVER point this at Hermes' `another-agent` bank
+#       apiUrl: http://127.0.0.1:9177      # empty = semantic memory off (default)
+#       bankId: dsh-assistant              # only used when apiUrl is set
 #       profilePath: ~/.dsh-assistant/memory/profile.json
 #       userBudget: 2200                   # chars, about-the-user track
 #       agentBudget: 4000                  # chars, notes-to-self track

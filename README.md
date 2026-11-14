@@ -35,7 +35,7 @@ existing DSH home or the host.
 |---|---|
 | `@local/dsh-soul` | Injects `soul/SOUL.md` at prompt order 0. Edit the file; no restart config. |
 | `@local/dsh-memory` | A bounded `memory/profile.json` plus `memory_remember` / `memory_recall` / `memory_forget`. Local by default; Hindsight is opt-in. |
-| `dsh-ego-browser` | Real Chrome tools (`ego_*`): open, click, type, screenshot, tabs. |
+| `dsh-ego-browser` | Real Chrome tools (`ego_*`): open, click, type, screenshot, tabs. Third-party (MIT), pinned to 0.9.14. |
 
 ## Data and privacy
 

@@ -5,7 +5,7 @@
 #
 #   - id: dsh-soul
 #     config:
-#       file: /home/another-agent/.dsh-assistant/soul/SOUL.md   # default: $DSH_HOME/soul/SOUL.md
+#       file: ~/.dsh-assistant/soul/SOUL.md   # default: $DSH_HOME/soul/SOUL.md
 #       maxBytes: 16384                               # default cap
 - insert:
     - id: dsh-soul
