@@ -15,7 +15,7 @@ import path from 'node:path';
 const home = mkdtempSync(path.join(os.tmpdir(), 'dsh-memory-selftest-'));
 process.env.DSH_HOME = home;
 
-const { apply, readProfile, writeProfile, renderProfile } = await import('./index.js');
+const { apply, probeHealth, readProfile, writeProfile, renderProfile } = await import('./index.js');
 
 let failures = 0;
 /** Assert one condition, recording the outcome. */
@@ -77,23 +77,49 @@ check(
   ['memory_forget', 'memory_recall', 'memory_remember'].every((name) => registered.some((t) => t.name === name)),
 );
 
+// ── health probe survives one busy-daemon timeout ───────────────────────────
+const probeHome = mkdtempSync(path.join(os.tmpdir(), 'dsh-probe-selftest-'));
+const probeStatus = path.join(probeHome, 'status.json');
+const probeConfig = { apiUrl: 'http://127.0.0.1:9177', bankId: 'dsh-assistant', statusPath: probeStatus, timeoutMs: 2000, allowBanks: ['dsh-assistant'] };
+const realFetch = globalThis.fetch;
+let healthAttempts = 0;
+globalThis.fetch = async (url) => {
+  if (String(url).endsWith('/health')) {
+    healthAttempts += 1;
+    if (healthAttempts === 1) throw new Error('The operation was aborted due to timeout');
+    return { ok: true, status: 200, json: async () => ({ status: 'healthy', database: 'connected' }) };
+  }
+  const stats = { total_nodes: 12, failed_operations: 0, pending_operations: 0, last_memory_write_at: '2026-11-15T00:00:00Z' };
+  return { ok: true, status: 200, text: async () => JSON.stringify(stats) };
+};
+const recovered = await probeHealth(probeConfig);
+const probeWritten = JSON.parse(readFileSync(probeStatus, 'utf8'));
+check('one busy probe is retried instead of reported down', recovered === true && healthAttempts === 2, `${healthAttempts}`);
+check('a healthy probe records the fact count', probeWritten.healthy === true && probeWritten.facts === 12, JSON.stringify(probeWritten));
+healthAttempts = 0;
+globalThis.fetch = async () => {
+  healthAttempts += 1;
+  throw new Error('connect ECONNREFUSED');
+};
+const down = await probeHealth(probeConfig);
+check('a daemon that really is down is reported', down === false && healthAttempts === 2, String(healthAttempts));
+globalThis.fetch = realFetch;
+rmSync(probeHome, { recursive: true, force: true });
+
 // ── tools against a stubbed fetch ────────────────────────────────────────────
 const calls = [];
+/** What the recall endpoint answers; tests swap it to exercise the score bar. */
+const recallState = {
+  results: [
+    { text: 'The user farms apples near Testville.', occurred_start: '2026-11-01T00:00:00Z', scores: { final: 0.91 } },
+    { text: 'Prefers suppliers within an hour.', occurred_start: '2026-11-13T00:00:00Z', scores: { final: 0.77 } },
+  ],
+};
 globalThis.fetch = async (url, init) => {
   calls.push({ url, body: init?.body });
   if (String(url).endsWith('/memories')) return { ok: true, status: 200, text: async () => '{}' };
   if (String(url).endsWith('/memories/recall')) {
-    return {
-      ok: true,
-      status: 200,
-      text: async () =>
-        JSON.stringify({
-          results: [
-            { text: 'The user farms apples near Testville.', occurred_start: '2026-11-01T00:00:00Z', scores: { final: 0.91 } },
-            { text: 'Prefers suppliers within an hour.', occurred_start: '2026-11-13T00:00:00Z', scores: { final: 0.77 } },
-          ],
-        }),
-    };
+    return { ok: true, status: 200, text: async () => JSON.stringify({ results: recallState.results }) };
   }
   return { ok: false, status: 404, text: async () => 'not found' };
 };
@@ -127,6 +153,22 @@ check('remember tags the fact', calls.some((call) => String(call.body).includes(
 
 const recalled = await recall.execute({ query: 'what do they farm?' });
 check('recall formats results', recalled.message.includes('apples') && recalled.message.includes('0.91'), recalled.message);
+
+const strongResults = recallState.results;
+recallState.results = [
+  { text: 'Unrelated garden note.', scores: { final: 0.02 } },
+  { text: 'Another note far away.', scores: { final: 0 } },
+];
+const weakOnly = await recall.execute({ query: 'drama triangle' });
+check(
+  'recall distinguishes weak matches from no match',
+  weakOnly.message.includes('relevance bar') && weakOnly.message.includes('2 weaker matches'),
+  weakOnly.message,
+);
+recallState.results = [];
+const noMatch = await recall.execute({ query: 'nothing at all' });
+check('recall says when nothing matched', noMatch.message.includes('No memories matched'), noMatch.message);
+recallState.results = strongResults;
 
 const forgot = await forget.execute({ text: 'apple', target: 'user' });
 check('forget removes the entry', !readProfile(file).profile.user.some((entry) => entry.includes('apple')), forgot.message);

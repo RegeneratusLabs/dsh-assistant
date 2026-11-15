@@ -501,37 +501,50 @@ function updateStatus(config, patch) {
  */
 export async function probeHealth(config) {
   const started = Date.now();
-  try {
-    const response = await fetch(`${config.apiUrl.replace(/\/+$/, '')}/health`, { signal: AbortSignal.timeout(2000) });
-    const body = await response.json().catch(() => ({}));
-    const healthy = response.ok && body.status === 'healthy';
-    updateStatus(config, {
-      healthy,
-      health: body.status ?? 'unknown',
-      database: body.database ?? null,
-      probeMs: Date.now() - started,
-    });
-    if (!healthy) return false;
+  // A local daemon under consolidation can miss a 2s probe while answering in
+  // 2ms a second later. One retry separates "busy" from "down"; the timeout is
+  // roomy because this runs once, at boot, and only decides a diagnostic field.
+  let response;
+  let body;
+  for (let attempt = 0; ; attempt += 1) {
     try {
-      const stats = await hindsightFetch(config, `/v1/default/banks/${encodeURIComponent(config.bankId)}/stats`);
-      const previous = readJson(config.statusPath) ?? {};
-      updateStatus(config, {
-        facts: stats.total_nodes ?? null,
-        failedOperations: stats.failed_operations ?? null,
-        // Historical failures never disappear, so the baseline is what makes a
-        // new failure visible without crying wolf on every doctor run.
-        failedOperationsBaseline: previous.failedOperationsBaseline ?? stats.failed_operations ?? null,
-        pendingOperations: stats.pending_operations ?? null,
-        lastWriteAt: stats.last_memory_write_at ?? null,
-      });
+      response = await fetch(`${config.apiUrl.replace(/\/+$/, '')}/health`, { signal: AbortSignal.timeout(8000) });
+      body = await response.json().catch(() => ({}));
+      break;
     } catch (error) {
-      warnOnce(`stats:${config.bankId}`, `cannot read bank stats: ${String((error && error.message) || error)}`);
+      if (attempt >= 1) {
+        updateStatus(config, { healthy: false, health: 'unreachable', lastError: String((error && error.message) || error).slice(0, 400) });
+        return false;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 500));
     }
-    return true;
-  } catch (error) {
-    updateStatus(config, { healthy: false, health: 'unreachable', lastError: String((error && error.message) || error) });
-    return false;
   }
+  const healthy = response.ok && body.status === 'healthy';
+  updateStatus(config, {
+    healthy,
+    health: body.status ?? 'unknown',
+    database: body.database ?? null,
+    probeMs: Date.now() - started,
+    // A stale failure message next to healthy=true reads as a live problem.
+    ...(healthy ? { lastError: null } : {}),
+  });
+  if (!healthy) return false;
+  try {
+    const stats = await hindsightFetch(config, `/v1/default/banks/${encodeURIComponent(config.bankId)}/stats`);
+    const previous = readJson(config.statusPath) ?? {};
+    updateStatus(config, {
+      facts: stats.total_nodes ?? null,
+      failedOperations: stats.failed_operations ?? null,
+      // Historical failures never disappear, so the baseline is what makes a
+      // new failure visible without crying wolf on every doctor run.
+      failedOperationsBaseline: previous.failedOperationsBaseline ?? stats.failed_operations ?? null,
+      pendingOperations: stats.pending_operations ?? null,
+      lastWriteAt: stats.last_memory_write_at ?? null,
+    });
+  } catch (error) {
+    warnOnce(`stats:${config.bankId}`, `cannot read bank stats: ${String((error && error.message) || error)}`);
+  }
+  return true;
 }
 
 /**
@@ -613,9 +626,13 @@ export async function retainFact(config, content, tags) {
 
 /**
  * Recall facts by meaning, dropping weak matches so noise stays out of context.
+ *
+ * The dropped count matters: "nothing matched" and "facts exist but none are
+ * close" are different answers, and conflating them once made a working bank
+ * look broken.
  * @param config - resolved plugin config.
  * @param query - natural-language query.
- * @returns the result list (may be empty).
+ * @returns kept results and how many weaker matches the relevance bar removed.
  */
 async function recallFacts(config, query) {
   const started = Date.now();
@@ -628,7 +645,7 @@ async function recallFacts(config, query) {
     const kept = results.filter((result) => scoreOf(result) >= config.minScore);
     clearAlert(config, 'recall');
     updateStatus(config, { healthy: true, lastRecallAt: new Date().toISOString(), lastRecallMs: Date.now() - started, lastRecallCount: kept.length });
-    return kept;
+    return { kept, dropped: results.length - kept.length };
   } catch (error) {
     recordAlert(config, 'recall', String((error && error.message) || error));
     throw error;
@@ -757,14 +774,21 @@ function buildTools(ctx, config) {
         };
       }
       try {
-        const results = await recallFacts(config, query);
-        if (results.length === 0) return { message: `No memories matched "${query}".` };
-        const lines = results.slice(0, 8).map((result, index) => {
+        const { kept, dropped } = await recallFacts(config, query);
+        if (kept.length === 0) {
+          return {
+            message:
+              dropped > 0
+                ? `No memory passed the relevance bar for "${query}" (${dropped} weaker match${dropped === 1 ? '' : 'es'} dropped). The bank has facts, just none close to this; a more specific query may find them.`
+                : `No memories matched "${query}".`,
+          };
+        }
+        const lines = kept.slice(0, 8).map((result, index) => {
           const when = result.occurred_start ? String(result.occurred_start).slice(0, 10) : '';
           const score = typeof result.scores?.final === 'number' ? ` [${result.scores.final.toFixed(2)}]` : '';
           return `${index + 1}. ${when ? `${when} — ` : ''}${String(result.text || '').trim()}${score}`;
         });
-        return { message: `Recalled ${results.length} memories for "${query}":\n${lines.join('\n')}` };
+        return { message: `Recalled ${kept.length} memories for "${query}":\n${lines.join('\n')}` };
       } catch (error) {
         return {
           message: `Memory recall failed (${String((error && error.message) || error)}). Continue without it and say so if the answer depends on memory.`,
@@ -854,7 +878,7 @@ export function apply(ctx, config) {
     console.error(
       `[dsh-memory] bank=${resolved.bankId} semantic=${resolved.apiUrl} profile=${resolved.profilePath} ` +
         `entries=${loaded.profile.user.length}user/${loaded.profile.agent.length}agent budgets=${resolved.userBudget}/${resolved.agentBudget} ` +
-        `health=${cached.health ?? 'unknown'}`,
+        `health=${cached.healthy === true ? 'healthy' : 'probing'}`,
     );
   } else {
     updateStatus(resolved, { semantic: false, healthy: null, facts: null, failedOperations: null, lastError: null });
