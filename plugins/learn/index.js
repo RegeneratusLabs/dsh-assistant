@@ -57,6 +57,8 @@ const DEFAULTS = {
   maxInputChars: 8000,
   maxMemory: 3,
   minUserChars: 80,
+  minToolCalls: 8,
+  minAssistantChars: 700,
   minIntervalMs: 300000,
   maxPerHour: 6,
   maxSkillBytes: 8192,
@@ -161,6 +163,8 @@ function resolveConfig(raw = {}) {
     maxInputChars: nonNegativeInt(raw.maxInputChars, DEFAULTS.maxInputChars, 20000) || DEFAULTS.maxInputChars,
     maxMemory: nonNegativeInt(raw.maxMemory, DEFAULTS.maxMemory, 5) || DEFAULTS.maxMemory,
     minUserChars: nonNegativeInt(raw.minUserChars, DEFAULTS.minUserChars, 4000),
+    minToolCalls: nonNegativeInt(raw.minToolCalls, DEFAULTS.minToolCalls, 500),
+    minAssistantChars: nonNegativeInt(raw.minAssistantChars, DEFAULTS.minAssistantChars, 20000),
     minIntervalMs: nonNegativeInt(raw.minIntervalMs, DEFAULTS.minIntervalMs, 3600000),
     maxPerHour: nonNegativeInt(raw.maxPerHour, DEFAULTS.maxPerHour, 60) || DEFAULTS.maxPerHour,
     maxSkillBytes: nonNegativeInt(raw.maxSkillBytes, DEFAULTS.maxSkillBytes, 32768) || DEFAULTS.maxSkillBytes,
@@ -180,6 +184,25 @@ export function looksReviewable(text, minChars = DEFAULTS.minUserChars) {
   const value = normalize(text);
   if (value.length === 0) return false;
   return value.length >= minChars || CORRECTION_RE.test(value);
+}
+
+/**
+ * Did this turn do enough work to be worth reviewing even when the human said
+ * little? A one-line "make me a slide" that ran 77 tool calls is exactly the
+ * turn whose procedures and preferences are worth keeping, and the text gate
+ * alone never sees it. Tool *names* are all this looks at, so the injection
+ * boundary is unchanged.
+ *
+ * @param {object} turn - the captured turn.
+ * @param {object} [limits] - configured floors.
+ * @returns {boolean} whether the turn qualifies.
+ */
+export function isSubstantialTurn(turn, limits = {}) {
+  const minToolCalls = limits.minToolCalls ?? DEFAULTS.minToolCalls;
+  const minAssistantChars = limits.minAssistantChars ?? DEFAULTS.minAssistantChars;
+  const toolCalls = Array.isArray(turn?.tools) ? turn.tools.length : 0;
+  const assistantChars = (turn?.assistantTexts ?? []).join('\n').trim().length;
+  return (minToolCalls > 0 && toolCalls >= minToolCalls) || (minAssistantChars > 0 && assistantChars >= minAssistantChars);
 }
 
 /**
@@ -630,7 +653,8 @@ export function observe(ctx, config, session, event) {
     turns.delete(id);
     if (data.reason?.kind !== 'completed') return;
     const combined = turn.userTexts.join('\n');
-    if (!looksReviewable(combined, config.minUserChars)) return;
+    const reviewable = looksReviewable(combined, config.minUserChars) || isSubstantialTurn(turn, config);
+    if (!reviewable) return;
     if (!reviewBudgetAllows(config)) return;
     reviewTimes.push(Date.now());
     const work = review(ctx, { ...turn, sessionId: id }, config).catch((error) => {

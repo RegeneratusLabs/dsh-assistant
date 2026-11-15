@@ -21,6 +21,7 @@ const {
   whenIdle,
   resetState,
   looksReviewable,
+  isSubstantialTurn,
   parseReview,
   validateReview,
   writeSkill,
@@ -67,14 +68,16 @@ function replyingWith(reply, calls) {
   };
 }
 
-/** Emit one complete qualifying turn. */
-function turn(emit, session, text, id = 1) {
+/** Emit one complete turn; `toolCalls` controls how substantial it looks. */
+function turn(emit, session, text, id = 1, { toolCalls = 1, assistant = 'Understood.' } = {}) {
   emit(session, 'turn/start', { turn: id });
   emit(session, 'request/header', { header: { config: { provider: 'opencode-go', model: 'deepseek-v4.1-flash' } } });
   emit(session, 'user/message', { source: { kind: 'user' }, content: [{ type: 'text', text }] });
-  emit(session, 'assistant/message', { message: { content: [{ type: 'text', text: 'Understood.' }] } });
-  emit(session, 'tool/call', { callId: `call-${id}`, name: 'web_search' });
-  emit(session, 'tool/result', { toolCallId: `call-${id}`, message: { isError: false, content: [] } });
+  emit(session, 'assistant/message', { message: { content: [{ type: 'text', text: assistant }] } });
+  for (let index = 0; index < toolCalls; index += 1) {
+    emit(session, 'tool/call', { callId: `call-${id}-${index}`, name: 'web_search' });
+    emit(session, 'tool/result', { toolCallId: `call-${id}-${index}`, message: { isError: false, content: [] } });
+  }
   emit(session, 'turn/end', { turn: id, reason: { kind: 'completed' } });
 }
 
@@ -148,6 +151,29 @@ check(
 );
 check('summarizeReview stays empty for a quiet review', summarizeReview({ memory: [], forget: 0, skill: null }) === '');
 check('publishNotice is a no-op without a registry', (await publishNotice({ get: () => undefined }, 's', 'x')) === false);
+
+// ── substantial turns are reviewed even when the human said one line ────────
+check('eight tool calls make a turn substantial', isSubstantialTurn({ tools: Array(8).fill({}), assistantTexts: [] }) === true);
+check('seven tool calls do not', isSubstantialTurn({ tools: Array(7).fill({}), assistantTexts: [] }) === false);
+check('a long final answer makes a turn substantial', isSubstantialTurn({ tools: [], assistantTexts: ['x'.repeat(700)] }) === true);
+check('an empty turn is not substantial', isSubstantialTurn({ tools: [], assistantTexts: ['ok'] }) === false);
+
+resetState();
+const busy = [];
+const busyCtx = makeCtx(replyingWith({ memory: [{ target: 'user', text: 'Wants social posts at 1080x1080.' }], forget: [], skill: null }, busy));
+apply(busyCtx.ctx, { minIntervalMs: 0, maxPerHour: 100, minToolCalls: 8, minAssistantChars: 700 });
+// A one-line request (below minUserChars 80) that did a lot of work.
+turn(busyCtx.emit, { id: 'session-busy', header: { isSeeded: false } }, 'Make me a slide on the drama triangle.', 1, { toolCalls: 12 });
+await whenIdle();
+check('a one-line but substantial turn is reviewed', busy.length === 1, String(busy.length));
+
+resetState();
+const idle = [];
+const idleCtx = makeCtx(replyingWith({ memory: [], forget: [], skill: null }, idle));
+apply(idleCtx.ctx, { minIntervalMs: 0, maxPerHour: 100, minToolCalls: 8, minAssistantChars: 700 });
+turn(idleCtx.emit, { id: 'session-idle', header: { isSeeded: false } }, 'Make me a slide on the drama triangle.', 1, { toolCalls: 2 });
+await whenIdle();
+check('a short turn with little work is still skipped', idle.length === 0, String(idle.length));
 
 // ── rate limit: the second turn in the window is not reviewed ──────────────
 resetState();
