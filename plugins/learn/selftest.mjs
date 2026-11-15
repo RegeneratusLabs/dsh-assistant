@@ -57,13 +57,13 @@ function makeCtx(stream, notices = null) {
   return { ctx, emit: (session, type, data) => handlers.forEach((handler) => handler(session, { type, data })) };
 }
 
-/** A model stub that yields one text chunk and a clean finish. */
-function replyingWith(reply, calls) {
+/** A model stub that yields one text chunk and the requested finish reason. */
+function replyingWith(reply, calls, finishKind = 'stop') {
   return (options) => {
     calls.push(options);
     return (async function* () {
       yield { type: 'text-delta', index: 0, text: typeof reply === 'string' ? reply : JSON.stringify(reply) };
-      yield { type: 'finish', reason: { kind: 'stop' } };
+      yield { type: 'finish', reason: { kind: finishKind } };
     })();
   };
 }
@@ -174,6 +174,31 @@ apply(idleCtx.ctx, { minIntervalMs: 0, maxPerHour: 100, minToolCalls: 8, minAssi
 turn(idleCtx.emit, { id: 'session-idle', header: { isSeeded: false } }, 'Make me a slide on the drama triangle.', 1, { toolCalls: 2 });
 await whenIdle();
 check('a short turn with little work is still skipped', idle.length === 0, String(idle.length));
+
+// ── truncation: salvage complete JSON, audit a cut-off object ───────────────
+resetState();
+const salvagedCalls = [];
+const salvagedCtx = makeCtx(
+  replyingWith({ memory: [{ target: 'user', text: 'Wants social posts square at 1080.' }], forget: [], skill: null }, salvagedCalls, 'max-tokens'),
+);
+apply(salvagedCtx.ctx, { minUserChars: 10, minIntervalMs: 0, maxPerHour: 100 });
+turn(salvagedCtx.emit, { id: 'session-cut-a', header: { isSeeded: false } }, 'From now on social posts are square.', 1);
+await whenIdle();
+check('a complete JSON that hits the ceiling is still applied', salvagedCalls.length === 1, String(salvagedCalls.length));
+check(
+  'the salvaged entry reached the profile',
+  JSON.parse(readFileSync(profileFile, 'utf8')).user.some((entry) => entry.includes('square at 1080')),
+  readFileSync(profileFile, 'utf8'),
+);
+
+resetState();
+const cutCalls = [];
+const cutCtx = makeCtx(replyingWith('{"memory":[{"target":"user","text":"This object was cut', cutCalls, 'max-tokens'));
+apply(cutCtx.ctx, { minUserChars: 10, minIntervalMs: 0, maxPerHour: 100 });
+turn(cutCtx.emit, { id: 'session-cut-b', header: { isSeeded: false } }, 'From now on write shorter replies.', 1);
+await whenIdle();
+const auditAfterCut = readFileSync(path.join(home, 'learning', 'audit.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+check('a cut-off object is audited as truncated', auditAfterCut.at(-1).ok === false && /truncated review/.test(auditAfterCut.at(-1).error), JSON.stringify(auditAfterCut.at(-1)));
 
 // ── rate limit: the second turn in the window is not reviewed ──────────────
 resetState();

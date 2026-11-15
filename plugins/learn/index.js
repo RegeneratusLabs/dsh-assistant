@@ -53,7 +53,7 @@ export const inject = ['llm'];
 /** Defaults; every value is overridable from the Loader row config. */
 const DEFAULTS = {
   timeoutMs: 20000,
-  maxTokens: 500,
+  maxTokens: 1500,
   maxInputChars: 8000,
   maxMemory: 3,
   minUserChars: 80,
@@ -446,6 +446,7 @@ function systemPrompt(maxMemory) {
     'When the turn taught a repeatable procedure the user will want again, propose one skill: a short self-contained SKILL.md body, not a diary. A skill must be supported by a memory entry in the same reply.',
     'Return: {"memory":[{"target":"user"|"agent","text":"..."}],"forget":[{"target":"user"|"agent","text":"..."}],"skill":{"name":"kebab-case","description":"one line","body":"markdown"}|null}',
     `At most ${maxMemory} memory entries, ${maxMemory} forgets and 1 skill. Empty arrays when nothing qualifies.`,
+    'Keep the reply under 1400 tokens: memory text under 200 characters, skill body under 2500 characters (about 50 lines). A cut-off reply is discarded.',
   ].join('\n');
 }
 
@@ -496,7 +497,10 @@ async function review(ctx, turn, config) {
     if (chunk.type === 'text-delta') output += chunk.text;
     else if (chunk.type === 'finish') finish = chunk.reason;
   }
-  if (!finish || finish.kind !== 'stop') {
+  // A truncated reply is a failure only if the JSON did not survive: the model
+  // can finish a complete object and then ramble past the ceiling.
+  const truncated = finish?.kind === 'max-tokens';
+  if (!finish || (finish.kind !== 'stop' && !truncated)) {
     const failure = finish?.failure;
     const detail = failure ? `${failure.code ?? 'LLM_ERROR'}: ${String(failure.message ?? '').slice(0, 200)}` : `finish ${finish?.kind ?? 'missing'}`;
     warnOnce(`review-finish:${detail.slice(0, 60)}`, `review call failed: ${detail}`);
@@ -505,6 +509,14 @@ async function review(ctx, turn, config) {
   }
 
   const parsed = parseReview(output);
+  if (truncated && parsed === null) {
+    // The one failure mode this plugin actually hit in production: a 500-token
+    // ceiling cut the JSON mid-object and every review was silently dropped.
+    const detail = `truncated review (max-tokens); ${output.length} chars, no complete JSON`;
+    warnOnce('review-truncated', `review was cut off at maxTokens=${config.maxTokens}; raise it or shorten the skill body`);
+    audit(config, { session: turn.sessionId, ok: false, error: detail });
+    return;
+  }
   const result = validateReview(parsed, config);
   const applied = { memory: [], forget: 0, skill: null };
 
