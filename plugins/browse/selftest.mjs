@@ -9,7 +9,7 @@
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { EventEmitter } from 'node:events';
-import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -24,10 +24,15 @@ delete process.env.DSH_BROWSE_OUT;
 const {
   apply,
   buildChromeArgs,
+  buildProbeArgs,
   buildTools,
   detectChallenge,
   filterAssets,
   findChromeBinary,
+  formatLayoutIssues,
+  injectBaseHref,
+  injectLayoutProbe,
+  parseLayoutProbe,
   resolveConfig,
   runProcess,
 } = await import('./index.js');
@@ -132,7 +137,8 @@ pass('child processes are bounded and report stderr');
 const tools = buildTools({ ...resolved, camofoxUrl: baseUrl, outputDir: path.join(ROOT, 'out'), chromeBinary: '' });
 const browse = tools.find((tool) => tool.name === 'browse');
 const render = tools.find((tool) => tool.name === 'render_html');
-assert.ok(browse && render, 'both tools are registered');
+const view = tools.find((tool) => tool.name === 'render_view');
+assert.ok(browse && render && view, 'all three tools are registered');
 assert.equal(browse.parameters.properties.action.enum.length, 10);
 
 const say = async (args) => (await browse.execute(args, { agent: { session: { id: 'selftest' } } })).message;
@@ -174,14 +180,101 @@ const origError = console.error;
 console.error = (...args) => logs.push(args.join(' '));
 apply({ tools: { register: (tool) => registered.push(tool.name) } }, { camofoxUrl: baseUrl });
 console.error = origError;
-assert.deepEqual(registered, ['browse', 'render_html']);
+assert.deepEqual(registered, ['browse', 'render_html', 'render_view']);
 assert.match(logs.join('\n'), /\[dsh-browse\] camofox=/);
-pass('apply registers browse + render_html and logs the wiring');
+pass('apply registers browse + render_html + render_view and logs the wiring');
 
 // render_html refuses a missing file instead of spawning anything.
 const missing = await render.execute({ html: path.join(ROOT, 'nope.html') });
 assert.match(missing.message, /No such HTML file/);
 pass('render_html checks its input before spawning');
+
+// ── layout probe (pure seams) ────────────────────────────────────────────────
+const probeSource = injectLayoutProbe('<html><body><p>hi</p></body></html>');
+assert.match(probeSource, /__dsh_layout/);
+assert.ok(probeSource.indexOf('__dsh_layout') < probeSource.indexOf('</body>'), 'probe runs before </body>');
+assert.match(injectLayoutProbe('<p>no body tag</p>'), /no body tag[\s\S]*__dsh_layout/);
+assert.match(injectBaseHref('<html><head></head><body></body></html>', '/tmp/art'), /<base href="file:\/\/\/tmp\/art\/">/);
+const dump = '<html><body><pre id="__dsh_layout">AUDIT:{"w":1080,"h":1080,"issues":[{"k":"out","t":"x","dx":9,"dy":0}],"skipped":0}</pre></body></html>';
+assert.equal(parseLayoutProbe(dump).issues[0].k, 'out');
+assert.equal(parseLayoutProbe('<html></html>'), null);
+assert.equal(parseLayoutProbe('<pre id="__dsh_layout">AUDIT:not json</pre>'), null);
+assert.deepEqual(buildProbeArgs({ chrome: '/bin/c', html: '/a.html', width: 1080, height: 1080 }).slice(-2), ['--dump-dom', 'file:///a.html']);
+const formatted = formatLayoutIssues([
+  { k: 'out', t: 'Off', dx: 4, dy: 0 },
+  { k: 'clip', t: 'Line', dx: 3, dy: 0 },
+  { k: 'tiny', t: 'Fine', px: 9 },
+  { k: 'overlap', a: 'A', b: 'B', pct: 21 },
+]);
+assert.match(formatted[0], /past the canvas edge/);
+assert.match(formatted[1], /clipped by its container/);
+assert.match(formatted[2], /below 15px/);
+assert.match(formatted[3], /collision: "A" ↔ "B" \(21%/);
+pass('layout probe injects, parses, and formats its findings');
+
+// ── render_view: probe + screenshot + attached image in one call ─────────────
+const artDir = path.join(ROOT, 'art');
+mkdirSync(artDir, { recursive: true });
+const artHtml = path.join(artDir, 'card.html');
+writeFileSync(artHtml, '<!doctype html><html><body><p>card</p></body></html>');
+const saved = [];
+const viewCtx = {
+  get: (service) =>
+    service === 'attachments'
+      ? { saveImage: async ({ data, mediaType, name }) => { saved.push({ bytes: data.length, mediaType, name }); return { attachmentId: 'sha256:abc', mediaType, bytes: data.length, width: 1080, height: 1080, name }; } }
+      : undefined,
+};
+/** A spawn stub that answers the probe with a DOM dump and every render with a PNG. */
+function fakeChrome({ probeJson = null, pngBytes = PNG } = {}) {
+  return (bin, argv, options) => {
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.kill = () => child.emit('close', null);
+    setTimeout(() => {
+      if (argv.includes('--dump-dom')) {
+        child.stdout.emit('data', `<html><body><pre id="__dsh_layout">AUDIT:${JSON.stringify(probeJson ?? { w: 1080, h: 1080, issues: [], skipped: 0 })}</pre></body></html>`);
+      } else {
+        const out = argv.find((arg) => arg.startsWith('--screenshot=')).slice('--screenshot='.length);
+        writeFileSync(out, pngBytes);
+      }
+      child.emit('close', 0);
+    }, 1);
+    return child;
+  };
+}
+const viewTools = buildTools(
+  { ...resolved, chromeBinary: '/bin/chrome', outputDir: artDir },
+  { ctx: viewCtx, spawnImpl: fakeChrome({ probeJson: { w: 1080, h: 1080, issues: [{ k: 'overlap', a: 'A', b: 'B', pct: 21 }], skipped: 2 } }) },
+);
+const viewTool = viewTools.find((tool) => tool.name === 'render_view');
+const viewed = await viewTool.execute({ html: artHtml }, { agent: { options: { provider: 'p', model: 'm' } } });
+assert.match(viewed.message, /Rendered .*card\.png \(1080×1080 at 2x/);
+assert.match(viewed.message, /Layout check found 1 issue/);
+assert.match(viewed.message, /collision: "A" ↔ "B"/);
+assert.match(viewed.message, /2 rotated text block/);
+assert.ok(existsSync(path.join(artDir, 'card.png')), 'render_view writes the PNG');
+assert.equal(viewed.image.attachmentId, 'sha256:abc');
+assert.equal(saved.length, 1);
+assert.equal(saved[0].mediaType, 'image/png');
+assert.deepEqual(viewed.issues, ['text collision: "A" ↔ "B" (21% of the smaller box)']);
+const blocks = viewTool.output.render({}, viewed);
+assert.equal(blocks[0].type, 'text');
+assert.equal(blocks[1].type, 'image');
+assert.equal(blocks[1].attachment.attachmentId, 'sha256:abc');
+
+// check:false skips the probe and the attachment still rides along.
+const lean = await viewTool.execute({ html: artHtml, check: false, width: 800, height: 600 }, {});
+assert.doesNotMatch(lean.message, /Layout check/);
+assert.match(lean.message, /800×600/);
+assert.equal(lean.issues.length, 0);
+
+// No attachment service: the path is still returned, no image block.
+const textOnly = buildTools({ ...resolved, chromeBinary: '/bin/chrome', outputDir: artDir }, { spawnImpl: fakeChrome({}) });
+const bare = await textOnly.find((tool) => tool.name === 'render_view').execute({ html: artHtml }, {});
+assert.equal(bare.image, undefined);
+assert.match(bare.message, /Image not attached/);
+pass('render_view renders, checks, and attaches the image in one call');
 
 server.close();
 rmSync(ROOT, { recursive: true, force: true });

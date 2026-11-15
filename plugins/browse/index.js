@@ -35,10 +35,11 @@
  *    the single most expensive failure mode we have seen in practice.
  */
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import os from 'node:os';
 import { spawn } from 'node:child_process';
 import { existsSync, readdirSync } from 'node:fs';
-import { mkdir, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, stat, unlink, writeFile } from 'node:fs/promises';
 
 /** This plugin's Loader row id / Cordis plugin name. */
 export const name = 'dsh-browse';
@@ -307,10 +308,12 @@ function humanBytes(bytes) {
  * Build the `browse` and `render_html` tool definitions.
  *
  * @param {object} config - resolved settings from {@link resolveConfig}.
- * @param {object} [deps] - test seams: `client`, `spawnImpl`, `clock`.
+ * @param {object} [deps] - test seams: `client`, `spawnImpl`, `clock`, and the
+ *   live Cordis `ctx` (needed for the attachment service behind `render_view`).
  * @returns {Array<object>} tool definitions for `ctx.tools.register`.
  */
 export function buildTools(config, deps = {}) {
+  const ctx = deps.ctx;
   const client = deps.client ?? new CamofoxClient({ baseUrl: config.camofoxUrl, timeoutMs: config.requestTimeoutMs });
   const spawnImpl = deps.spawnImpl ?? spawn;
   const now = deps.clock ?? (() => Date.now());
@@ -476,7 +479,7 @@ export function buildTools(config, deps = {}) {
   const renderHtml = {
     name: 'render_html',
     description:
-      'Render a local HTML file to a print PDF or a PNG with chromium\'s headless shell (no DevTools port, no browser service). Use this for artwork *we* produce — posters, letterheads, slides — where exact millimetre sizes and embedded fonts matter. Not for reading other sites: that is `web_fetch` or `browse`.',
+      'Render a local HTML file to a print PDF or a PNG with chromium\'s headless shell (no DevTools port, no browser service). Use this for artwork *we* produce — posters, letterheads, slides — where exact millimetre sizes and embedded fonts matter. To look at a PNG you are iterating on, use `render_view` instead: it renders, returns the image, and checks the layout in one call. Not for reading other sites: that is `web_fetch` or `browse`.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -520,8 +523,179 @@ export function buildTools(config, deps = {}) {
     },
   };
 
-  return [browse, renderHtml];
+  /**
+   * `render_view` is the design-loop tool: one call renders, measures the layout
+   * and hands the image back to the model. The old pairing (render_html, then
+   * read_image) cost two model turns per look and stored two records of one
+   * fact; this costs one.
+   */
+  const renderView = {
+    name: 'render_view',
+    description:
+      'Render our own HTML, SEE the result, and check its layout in one step: writes a PNG, returns the image itself, and runs a deterministic probe for text past the canvas edge, clipped or overflowing containers, type under 15px, and painted-text collisions between blocks. ' +
+      'Use this for every design iteration (posters, slides, social posts). Use `render_html` only for a PDF or a PNG nobody needs to inspect. When the probe lists a problem, fix it in the HTML and call again.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        html: { type: 'string', description: 'Path to the HTML file (relative paths resolve against the process cwd).' },
+        png: { type: 'string', description: 'Output PNG path. Default: the HTML path with a .png extension.' },
+        width: { type: 'number', description: 'Viewport width in CSS px. Default: the document body width from the layout probe, else 1280.' },
+        height: { type: 'number', description: 'Viewport height in CSS px. Default: the document body height from the layout probe, else 900.' },
+        scale: { type: 'number', description: 'Device scale factor. Default 2.' },
+        check: { type: 'boolean', description: 'Run the layout probe. Default true; set false for a final export where only the image matters.' },
+      },
+      required: ['html'],
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          message: { type: 'string' },
+          issues: { type: 'array', items: { type: 'string' } },
+          image: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              attachmentId: { type: 'string' },
+              mediaType: { type: 'string' },
+              bytes: { type: 'integer' },
+              width: { type: 'integer' },
+              height: { type: 'integer' },
+              name: { type: 'string' },
+            },
+          },
+        },
+        required: ['message'],
+      },
+      render: (_args, value) => {
+        const blocks = [{ type: 'text', text: value.message }];
+        if (value.image) blocks.push({ type: 'image', attachment: value.image });
+        return blocks;
+      },
+    },
+    async execute(args, exec) {
+      const html = path.resolve(String(args.html ?? ''));
+      if (!existsSync(html)) return { message: `No such HTML file: ${html}` };
+      if (config.chromeBinary === '') {
+        return { message: 'No chromium headless shell found under ~/.cache/ms-playwright; set DSH_BROWSE_CHROME to a binary.' };
+      }
+
+      // Pass 1: measure the document. The probe copy lives beside the original so
+      // relative font and image paths resolve exactly as they do for the real render.
+      let probe = null;
+      let probeError = '';
+      if (args.check !== false) {
+        const probeName = `.dsh-layout-${process.pid}-${now()}.html`;
+        const probeDir = path.dirname(html);
+        const source = await readFile(html, 'utf8');
+        let probeFile = path.join(probeDir, probeName);
+        let probeReady = true;
+        try {
+          await writeFile(probeFile, injectLayoutProbe(source), { mode: 0o600 });
+        } catch {
+          try {
+            probeFile = path.join(os.tmpdir(), probeName);
+            await writeFile(probeFile, injectBaseHref(injectLayoutProbe(source), probeDir), { mode: 0o600 });
+          } catch (error) {
+            probeReady = false;
+            probeError = `layout probe could not be written: ${error?.message ?? String(error)}`;
+          }
+        }
+        if (probeReady) try {
+          const run = await runProcess(
+            spawnImpl,
+            buildProbeArgs({
+              chrome: config.chromeBinary,
+              html: probeFile,
+              width: Number(args.width ?? 1200),
+              height: Number(args.height ?? 1200),
+            }),
+            config.renderTimeoutMs,
+            { captureStdout: true },
+          );
+          if (run.timedOut) probeError = `layout probe timed out after ${config.renderTimeoutMs}ms`;
+          else probe = parseLayoutProbe(run.stdout);
+          if (!probe && probeError === '') probeError = `layout probe returned no report (exit ${run.code})`;
+        } catch (error) {
+          probeError = `layout probe failed: ${error?.message ?? String(error)}`;
+        } finally {
+          await unlink(probeFile).catch(() => undefined);
+        }
+      }
+
+      // Pass 2: the render. Body size from the probe beats a default that crops.
+      const width = Math.round(Number(args.width) || Number(probe?.w) || 1280);
+      const height = Math.round(Number(args.height) || Number(probe?.h) || 900);
+      const scale = Number(args.scale ?? 2) || 2;
+      const png = path.resolve(String(args.png ?? html.replace(/\.html?$/i, '') + '.png'));
+      await mkdir(path.dirname(png), { recursive: true });
+      const result = await runProcess(
+        spawnImpl,
+        buildChromeArgs({ chrome: config.chromeBinary, html, output: png, mode: 'png', width, height, scale }),
+        config.renderTimeoutMs,
+      );
+      if (result.timedOut) return { message: `Render timed out after ${config.renderTimeoutMs}ms: ${config.chromeBinary}` };
+      if (!existsSync(png)) {
+        return { message: `Render produced no file (exit ${result.code}).\n${result.stderr.slice(-800)}` };
+      }
+      const info = await stat(png);
+
+      // Attach the image so the model sees it in this same turn. Best effort: a
+      // missing attachment service or a text-only route still leaves a usable path.
+      let image;
+      const attachments = ctx?.get?.('attachments');
+      if (attachments) {
+        try {
+          const llm = ctx.get?.('llm');
+          const routed = exec?.agent?.session?.requestHeader?.()?.config;
+          const provider = routed?.provider ?? exec?.agent?.options?.provider;
+          const model = routed?.model ?? exec?.agent?.options?.model;
+          let capable = true;
+          if (llm && provider && model) {
+            const modelInfo = await llm.resolveModelInfo(provider, model, exec?.signal).catch(() => undefined);
+            capable = Array.isArray(modelInfo?.inputModalities) && modelInfo.inputModalities.includes('image');
+          }
+          if (capable) {
+            const data = await readFile(png);
+            const ref = await attachments.saveImage({ data, mediaType: 'image/png', name: path.basename(png) });
+            image = {
+              attachmentId: String(ref.attachmentId),
+              mediaType: ref.mediaType,
+              bytes: ref.bytes,
+              width: ref.width,
+              height: ref.height,
+              name: ref.name ?? path.basename(png),
+            };
+          }
+        } catch {
+          image = undefined;
+        }
+      }
+
+      const lines = [`Rendered ${png} (${width}×${height} at ${scale}x, ${humanBytes(info.size)}).`];
+      if (args.check !== false) {
+        if (probe) {
+          const found = formatLayoutIssues(probe.issues);
+          lines.push(
+            found.length > 0
+              ? `Layout check found ${probe.issues.length} issue(s):\n${found.map((line) => `- ${line}`).join('\n')}`
+              : 'Layout check: no objective layout problems.',
+          );
+          if (probe.skipped > 0) lines.push(`(${probe.skipped} rotated text block(s) were skipped by the collision check.)`);
+        } else {
+          lines.push(`Layout check unavailable: ${probeError}. Judge the image by eye.`);
+        }
+      }
+      if (!image) lines.push('Image not attached (no attachment service or a text-only model route); inspect the PNG path instead.');
+      return { message: lines.join('\n'), issues: probe ? formatLayoutIssues(probe.issues, 24) : [], ...(image ? { image } : {}) };
+    },
+  };
+
+  return [browse, renderHtml, renderView];
 }
+
 
 /**
  * Build the chromium argv for one render. Pure, so the self-test can pin the
@@ -557,24 +731,195 @@ export function buildChromeArgs({ chrome, html, output, mode, width, height, sca
 }
 
 /**
+ * The layout probe injected into a copy of the document before `--dump-dom`.
+ *
+ * It exists because the expensive part of a design iteration is not rendering —
+ * it is the model *guessing* from a screenshot where the collision is and
+ * fixing the wrong box. The probe answers the objective questions in numbers:
+ * painted text past the canvas edge, a scroll container hiding content, type
+ * below a legible floor, and painted-text collisions between separate blocks.
+ * Judgement stays with the model; only measurements are asserted here.
+ *
+ * Deliberate limits keep it quiet rather than clever:
+ *  - text bounds come from a Range, not the element box, because a right-aligned
+ *    block is 1080px wide while its glyphs are not;
+ *  - a subtree with a transform is skipped (its axis-aligned box lies about
+ *    rotated type — the "type collision" direction is intentional overlap);
+ *  - a collision must cover one sixth of the smaller painted line box (a
+ *    graze is not reported; a 21% box overlap reads as text on text).
+ */
+export const LAYOUT_PROBE_SOURCE = `(async () => {
+  try { await document.fonts.ready; } catch (e) {}
+  const body = document.body;
+  const br = body.getBoundingClientRect();
+  const out = { w: Math.round(br.width), h: Math.round(br.height), issues: [], skipped: 0 };
+  const transformed = (el) => {
+    for (let n = el; n && n !== document.documentElement; n = n.parentElement) {
+      const cs = getComputedStyle(n);
+      if (cs.transform !== 'none' || cs.rotate !== 'none') return true;
+    }
+    return false;
+  };
+  const leaves = [];
+  for (const el of body.querySelectorAll('*')) {
+    if (el.childElementCount > 0) continue;
+    const text = (el.textContent || '').replace(/\\s+/g, ' ').trim();
+    if (!text) continue;
+    const cs = getComputedStyle(el);
+    if (cs.display === 'none' || cs.visibility === 'hidden' || Number(cs.opacity) === 0) continue;
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    const rects = [...range.getClientRects()].filter((r) => r.width > 1 && r.height > 1);
+    if (rects.length === 0) continue;
+    leaves.push({ el, text: text.slice(0, 44), rects, size: parseFloat(cs.fontSize) || 0, rot: transformed(el) });
+  }
+  for (const leaf of leaves) {
+    let dx = 0, dy = 0;
+    for (const r of leaf.rects) {
+      dx = Math.max(dx, br.left - r.left, r.right - br.right);
+      dy = Math.max(dy, br.top - r.top, r.bottom - br.bottom);
+    }
+    if (dx > 2 || dy > 2) out.issues.push({ k: 'out', t: leaf.text, dx: Math.round(dx), dy: Math.round(dy) });
+  }
+  const rotated = leaves.filter((l) => l.rot).map((l) => l.el);
+  for (const el of body.querySelectorAll('*')) {
+    const cs = getComputedStyle(el);
+    if (cs.overflow === 'visible' || cs.transform !== 'none') continue;
+    // Overflow caused by deliberate rotated bleed is a design choice, not a defect.
+    if (rotated.some((node) => el.contains(node))) continue;
+    const dx = el.scrollWidth - el.clientWidth;
+    const dy = el.scrollHeight - el.clientHeight;
+    if (dx > 2 || dy > 2) out.issues.push({ k: 'clip', t: (el.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 32), dx, dy });
+  }
+  for (const leaf of leaves) {
+    if (leaf.size > 0 && leaf.size < 15) out.issues.push({ k: 'tiny', t: leaf.text, px: +leaf.size.toFixed(1) });
+  }
+  const paint = leaves.filter((l) => !l.rot);
+  out.skipped = leaves.length - paint.length;
+  for (let a = 0; a < paint.length; a++) {
+    for (let b = a + 1; b < paint.length; b++) {
+      const A = paint[a], B = paint[b];
+      if (A.el.contains(B.el) || B.el.contains(A.el)) continue;
+      let hit = 0, small = Infinity;
+      for (const ra of A.rects) {
+        small = Math.min(small, ra.width * ra.height);
+        for (const rb of B.rects) {
+          const x = Math.min(ra.right, rb.right) - Math.max(ra.left, rb.left);
+          const y = Math.min(ra.bottom, rb.bottom) - Math.max(ra.top, rb.top);
+          if (x > 0 && y > 0) hit += x * y;
+        }
+      }
+      for (const rb of B.rects) small = Math.min(small, rb.width * rb.height);
+      const pct = small > 0 && Number.isFinite(small) ? Math.round((hit / small) * 100) : 0;
+      if (pct >= 15) out.issues.push({ k: 'overlap', a: A.text, b: B.text, pct });
+    }
+  }
+  out.issues = out.issues.slice(0, 24);
+  const pre = document.createElement('pre');
+  pre.id = '__dsh_layout';
+  pre.textContent = 'AUDIT:' + JSON.stringify(out);
+  document.documentElement.appendChild(pre);
+})();`;
+
+/**
+ * Make a copy's relative URLs resolve against the original directory. Needed
+ * only when the probe cannot be written beside the HTML (a read-only artwork
+ * directory), because then the copy lives in a temp directory instead.
+ */
+export function injectBaseHref(html, directory) {
+  const href = pathToFileURL(directory.endsWith(path.sep) ? directory : `${directory}${path.sep}`).href;
+  const tag = `<base href="${href}">`;
+  return /<head[^>]*>/i.test(html) ? html.replace(/<head[^>]*>/i, (head) => `${head}${tag}`) : `${tag}${html}`;
+}
+
+/** Wrap a document so the probe runs after the page's own scripts. */
+export function injectLayoutProbe(html) {
+  const tag = `<script>${LAYOUT_PROBE_SOURCE}<\/script>`;
+  return /<\/body>/i.test(html) ? html.replace(/<\/body>/i, `${tag}</body>`) : `${html}${tag}`;
+}
+
+/**
+ * Read the probe result out of a `--dump-dom` dump.
+ *
+ * @param {string} stdout - serialized DOM.
+ * @returns {{w: number, h: number, issues: Array<object>, skipped: number} | null} the report, or null when absent.
+ */
+export function parseLayoutProbe(stdout) {
+  const match = /__dsh_layout[^>]*>(AUDIT:[\s\S]*?)<\/pre>/i.exec(String(stdout ?? ''));
+  if (!match) return null;
+  try {
+    const parsed = JSON.parse(match[1].slice('AUDIT:'.length));
+    if (!parsed || !Array.isArray(parsed.issues)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * chromium argv for the layout pass.
+ *
+ * @param {{chrome: string, html: string, width: number, height: number}} options - probe target.
+ * @returns {string[]} argv, binary first.
+ */
+export function buildProbeArgs({ chrome, html, width, height }) {
+  return [
+    chrome,
+    '--no-sandbox',
+    '--disable-gpu',
+    '--disable-dev-shm-usage',
+    '--disable-crash-reporter',
+    '--no-first-run',
+    '--disable-extensions',
+    '--hide-scrollbars',
+    '--virtual-time-budget=5000',
+    `--window-size=${Math.round(width)},${Math.round(height)}`,
+    '--dump-dom',
+    `file://${html}`,
+  ];
+}
+
+/**
+ * One compact line per probe finding, ordered by how likely it is to be a real
+ * defect. The model reads these before it looks at the image.
+ *
+ * @param {Array<object>} issues - probe issues.
+ * @param {number} [limit] - maximum lines to render.
+ * @returns {string[]} formatted lines.
+ */
+export function formatLayoutIssues(issues, limit = 12) {
+  return (Array.isArray(issues) ? issues : []).slice(0, limit).map((issue) => {
+    if (issue.k === 'out') return `text past the canvas edge: "${issue.t}" (${issue.dx}px x, ${issue.dy}px y)`;
+    if (issue.k === 'clip') return `clipped by its container: "${issue.t}" (${issue.dx}px x, ${issue.dy}px y hidden)`;
+    if (issue.k === 'tiny') return `type below 15px: "${issue.t}" (${issue.px}px)`;
+    if (issue.k === 'overlap') return `text collision: "${issue.a}" ↔ "${issue.b}" (${issue.pct}% of the smaller box)`;
+    return `layout issue: ${JSON.stringify(issue).slice(0, 120)}`;
+  });
+}
+
+/**
  * Run one child process with a hard timeout. Resolves rather than throws: a
  * render either produced its file or it did not, and both outcomes are answers.
  *
  * @param {Function} spawnImpl - `child_process.spawn`.
  * @param {string[]} argv - binary and arguments.
  * @param {number} timeoutMs - kill deadline.
- * @returns {Promise<{code: number|null, timedOut: boolean, stderr: string}>} the outcome.
+ * @param {{captureStdout?: boolean}} [options] - capture stdout for a `--dump-dom` probe.
+ * @returns {Promise<{code: number|null, timedOut: boolean, stderr: string, stdout: string}>} the outcome.
  */
-export function runProcess(spawnImpl, argv, timeoutMs) {
+export function runProcess(spawnImpl, argv, timeoutMs, options = {}) {
   return new Promise((resolve) => {
     let stderr = '';
+    let stdout = '';
     let settled = false;
-    const child = spawnImpl(argv[0], argv.slice(1), { stdio: ['ignore', 'ignore', 'pipe'] });
+    const child = spawnImpl(argv[0], argv.slice(1), {
+      stdio: ['ignore', options.captureStdout ? 'pipe' : 'ignore', 'pipe'],
+    });
     const finish = (value) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      resolve(value);
+      resolve({ stdout, ...value });
     };
     const timer = setTimeout(() => {
       // The deadline is authoritative: settle first, then kill, so a child that
@@ -592,6 +937,9 @@ export function runProcess(spawnImpl, argv, timeoutMs) {
     child.stderr?.on('data', (chunk) => {
       if (stderr.length < 8000) stderr += String(chunk);
     });
+    child.stdout?.on('data', (chunk) => {
+      if (stdout.length < 8_000_000) stdout += String(chunk);
+    });
     child.on('error', (error) => finish({ code: null, timedOut: false, stderr: `${stderr}${error.message}` }));
     child.on('close', (code) => finish({ code, timedOut: false, stderr }));
   });
@@ -606,7 +954,7 @@ export function runProcess(spawnImpl, argv, timeoutMs) {
  */
 export function apply(ctx, config) {
   const resolved = resolveConfig(config ?? {});
-  for (const tool of buildTools(resolved)) ctx.tools.register(tool);
+  for (const tool of buildTools(resolved, { ctx })) ctx.tools.register(tool);
   console.error(
     `[dsh-browse] camofox=${resolved.camofoxUrl} user=${resolved.userId} out=${resolved.outputDir} chrome=${resolved.chromeBinary === '' ? 'missing' : path.basename(resolved.chromeBinary)}`,
   );
