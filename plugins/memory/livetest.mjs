@@ -5,7 +5,7 @@
  * it is the only test allowed to talk to the network. It is read-only against a
  * real bank. A write round-trip happens only when the caller names a throwaway
  * bank that starts with `dsh-live-` and asks for it explicitly, so a typo can
- * never create or delete a real bank (least of all `another-agent`).
+ * never create or delete a real bank (least of all another agent's).
  *
  * Run:
  *   npm run test:live                                   # read-only against dsh-assistant

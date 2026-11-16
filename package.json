@@ -2,7 +2,7 @@
   "name": "dsh-assistant",
   "version": "0.1.0",
   "private": true,
-  "description": "A assistant built on DeepSeek Harness. Everything is a plugin.",
+  "description": "An assistant profile for DeepSeek Harness. Everything is a plugin.",
   "type": "module",
   "bin": {
     "dsh-assistant": "./bin/assistant.mjs"

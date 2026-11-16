@@ -283,10 +283,10 @@ await whenIdle();
 check('semantic retain follows a learned entry', posted.some((request) => request.url.endsWith('/memories')), JSON.stringify(posted));
 
 const beforeForeign = posted.length;
-writeFileSync(statusFile, JSON.stringify({ semantic: true, apiUrl: 'http://127.0.0.1:9999', bank: 'another-agent' }));
+writeFileSync(statusFile, JSON.stringify({ semantic: true, apiUrl: 'http://127.0.0.1:9999', bank: 'other-bank', denyBanks: ['other-bank'] }));
 resetState();
 const foreignCalls = [];
-const foreignCtx = makeCtx(replyingWith({ memory: [{ target: 'user', text: 'A fact that must not reach Hermes.' }], forget: [], skill: null }, foreignCalls));
+const foreignCtx = makeCtx(replyingWith({ memory: [{ target: 'user', text: 'A fact that must not reach another agent.' }], forget: [], skill: null }, foreignCalls));
 apply(foreignCtx.ctx, { minUserChars: 10, minIntervalMs: 0, maxPerHour: 100 });
 turn(foreignCtx.emit, session, 'From now on, remember this fact.', 1);
 await whenIdle();

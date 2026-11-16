@@ -5,7 +5,7 @@
  * bounded render, the budget overflow contract, prompt-section registration, tool
  * registration, and each tool's behaviour against a stubbed fetch.
  *
- * Run: node plugins/dsh-memory/selftest.mjs
+ * Run: node plugins/memory/selftest.mjs
  */
 
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
@@ -32,7 +32,7 @@ function check(label, condition, detail = '') {
 const file = path.join(home, 'memory', 'profile.json');
 check('missing profile reads as empty', readProfile(file).profile.user.length === 0 && readProfile(file).missing === true);
 
-writeProfile(file, { user: ['Based on the a coastal town.'], agent: ['Prefers local suppliers.'] });
+writeProfile(file, { user: ['Based in a coastal town.'], agent: ['Prefers local suppliers.'] });
 const back = readProfile(file).profile;
 check('round-trip keeps both tracks', back.user.length === 1 && back.agent.length === 1, JSON.stringify(back));
 check('file is 0600', (readFileSync(file, { encoding: 'utf8' }) !== ''));
@@ -69,7 +69,7 @@ check('prompt section registered', section !== null && section.name === 'memory:
 // freeze the block at boot (the regression this assertion exists to prevent).
 const sectionText = () => (typeof section.text === 'function' ? section.text() : section.text);
 check('section text is dynamic', typeof section.text === 'function', typeof section.text);
-check('section carries the profile', sectionText().includes('a coastal town'));
+check('section carries the profile', sectionText().includes('coastal town'));
 check('section order sits after the persona', section.order === 1);
 check('three tools registered', registered.length === 3, registered.map((t) => t.name).join(','));
 check(
@@ -111,7 +111,7 @@ const calls = [];
 /** What the recall endpoint answers; tests swap it to exercise the score bar. */
 const recallState = {
   results: [
-    { text: 'The user farms apples near Testville.', occurred_start: '2026-11-01T00:00:00Z', scores: { final: 0.91 } },
+    { text: 'The user grows apples near Testville.', occurred_start: '2026-11-01T00:00:00Z', scores: { final: 0.91 } },
     { text: 'Prefers suppliers within an hour.', occurred_start: '2026-11-13T00:00:00Z', scores: { final: 0.77 } },
   ],
 };
@@ -134,24 +134,24 @@ const deniedCtx = {
   effect: (fn) => fn(),
   tools: { register: (tool) => denied.push(tool) },
 };
-apply(deniedCtx, { bankId: 'another-agent', apiUrl: 'http://127.0.0.1:9177', profilePath: file, probe: false });
+apply(deniedCtx, { bankId: 'other-agent', allowBanks: 'other-agent', denyBanks: 'other-agent', apiUrl: 'http://127.0.0.1:9177', profilePath: file, probe: false });
 check('a foreign bank is refused', denied.length === 0, denied.map((t) => t.name).join(','));
 
 const remembered = await remember.execute({ text: 'Runs a small apple orchard near Testville.', target: 'user' });
-check('remember writes the profile', readProfile(file).profile.user.some((entry) => entry.includes('apple')), remembered.message);
+check('remember writes the profile', readProfile(file).profile.user.some((entry) => entry.includes('orchard')), remembered.message);
 check('remember renders a usage line', /Usage: user \d+\/2200 \(\d+%\)/.test(sectionText()), sectionText());
 const duplicate = await remember.execute({ text: '  runs a small apple orchard near Testville. ', target: 'user' });
 check('duplicate entries are refused', duplicate.message.includes('Already'), duplicate.message);
 check(
   'duplicate did not grow the track',
-  readProfile(file).profile.user.filter((entry) => entry.includes('apple')).length === 1,
+  readProfile(file).profile.user.filter((entry) => entry.includes('orchard')).length === 1,
   JSON.stringify(readProfile(file).profile.user),
 );
-check('remember is visible in the same-session prompt block', sectionText().includes('apple'), sectionText());
+check('remember is visible in the same-session prompt block', sectionText().includes('orchard'), sectionText());
 check('remember retains to Hindsight', calls.some((call) => String(call.url).endsWith('/memories')), JSON.stringify(calls));
 check('remember tags the fact', calls.some((call) => String(call.body).includes('"tags":["user"]')));
 
-const recalled = await recall.execute({ query: 'what do they farm?' });
+const recalled = await recall.execute({ query: 'what do they grow?' });
 check('recall formats results', recalled.message.includes('apples') && recalled.message.includes('0.91'), recalled.message);
 
 const strongResults = recallState.results;
@@ -170,9 +170,9 @@ const noMatch = await recall.execute({ query: 'nothing at all' });
 check('recall says when nothing matched', noMatch.message.includes('No memories matched'), noMatch.message);
 recallState.results = strongResults;
 
-const forgot = await forget.execute({ text: 'apple', target: 'user' });
-check('forget removes the entry', !readProfile(file).profile.user.some((entry) => entry.includes('apple')), forgot.message);
-check('forget leaves the same-session prompt block immediately', !sectionText().includes('apple'), sectionText());
+const forgot = await forget.execute({ text: 'orchard', target: 'user' });
+check('forget removes the entry', !readProfile(file).profile.user.some((entry) => entry.includes('orchard')), forgot.message);
+check('forget leaves the same-session prompt block immediately', !sectionText().includes('orchard'), sectionText());
 
 // ── budget overflow contract ─────────────────────────────────────────────────
 const tight = path.join(home, 'memory', 'tight.json');

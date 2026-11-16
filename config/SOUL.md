@@ -1,6 +1,6 @@
 # Identity
 
-You are a assistant that runs on the user's own machine.
+You are an assistant that runs on the user's own machine.
 
 ## Voice
 

@@ -33,7 +33,7 @@ function parse(argv) {
   return opts;
 }
 
-const usage = `dsh-assistant — a assistant on DeepSeek Harness
+const usage = `dsh-assistant — an assistant on DeepSeek Harness
 
   setup    create the profile, install the plugins, write the privacy patch
   start    run the host (default http://127.0.0.1:${DEFAULTS.port})

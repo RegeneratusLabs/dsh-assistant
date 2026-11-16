@@ -2,7 +2,7 @@
   "name": "@local/dsh-learn",
   "version": "0.1.0",
   "private": true,
-  "description": "Background turn review for the assistant: records durable memory and writes procedural skills under $DSH_HOME, auditably and without approval prompts.",
+  "description": "Background turn review for an assistant: records durable memory and writes procedural skills under $DSH_HOME, auditably and without approval prompts.",
   "type": "module",
   "exports": {
     ".": "./index.js",

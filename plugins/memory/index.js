@@ -1,11 +1,11 @@
 /**
- * dsh-memory — a assistant memory layer over Hindsight.
+ * dsh-memory — an assistant memory layer over Hindsight.
  *
  * WHY THIS EXISTS
  * `@vectorize-io/hindsight-coding-agents` is a *coding-agent* integration: per-repo
  * banks, git-history ingest, knowledge pages about a codebase, and a ~12 KB
  * tool-usage manual injected on the first prompt (which then rides in every
- * request). A assistant has no repo, no git history and no codebase
+ * request). An assistant has no repo, no git history and no codebase
  * pages — so the manual is pure overhead and the knowledge-page tier stays empty.
  *
  * What the field (Hermes / OpenClaw / Letta) actually converged on is three tiers:
@@ -35,10 +35,10 @@
  *    profile without a package install.
  *
  * SAFETY
- *  - A bank allowlist plus a hard denylist. The assistant must never
- *    read or write another agent's bank (`another-agent`, `another-agent*`), even if a config or
- *    an environment variable points at it. Refusing to register is safer than
- *    silently touching the wrong memory.
+ *  - A bank allowlist plus an optional denylist. The assistant must never read
+ *    or write another agent's bank, even if a config or an environment variable
+ *    points at it. `denyBanks` fences off named banks; refusing to register is
+ *    safer than silently touching the wrong memory.
  *  - Every semantic failure is recorded to memory/alerts.json and surfaces as a
  *    warning line in the prompt block, because a silent retain failure looks
  *    exactly like "the assistant forgot".
@@ -70,14 +70,14 @@ const DEFAULTS = {
 };
 
 /** Banks this assistant may touch unless the row explicitly widens the list. */
-export const ALLOWED_BANKS = ['dsh-assistant', 'dsh-assistant'];
+export const ALLOWED_BANKS = ['dsh-assistant'];
 
 /**
- * Banks that are never ours, whatever the config says. `another-agent` is another
- * person's Hermes home; `another-agent` is the user's personal Hermes. Both are local
+ * Banks that are never ours, whatever the allowlist says. Empty by default:
+ * set `denyBanks` on the row to fence off another agent's banks. Both are local
  * services, so a bug here would not be a remote incident — it would be worse.
  */
-export const DENIED_BANKS = ['another-agent', 'another-agent'];
+export const DENIED_BANKS = [];
 
 /** Hindsight fact kinds this plugin writes. */
 const TARGETS = ['user', 'agent', 'fact'];
@@ -164,12 +164,13 @@ function list(value, fallback) {
  * `allowBanks` must never be able to reach another agent's memory.
  * @param bankId - resolved bank.
  * @param allow - configured allowlist.
+ * @param deny - configured denylist.
  * @returns whether the bank is ours.
  */
-export function bankAllowed(bankId, allow = ALLOWED_BANKS) {
+export function bankAllowed(bankId, allow = ALLOWED_BANKS, deny = DENIED_BANKS) {
   const id = String(bankId || '').trim();
   if (id.length === 0) return false;
-  if (DENIED_BANKS.some((denied) => id === denied || id.startsWith(`${denied}-`))) return false;
+  if (deny.some((denied) => id === denied || id.startsWith(`${denied}-`))) return false;
   return allow.includes(id);
 }
 
@@ -488,6 +489,8 @@ function updateStatus(config, patch) {
     agentBudget: config.agentBudget,
     checkedAt: new Date().toISOString(),
     ...previous,
+    allowBanks: config.allowBanks,
+    denyBanks: config.denyBanks,
     ...patch,
   });
 }
@@ -595,7 +598,7 @@ function retryable(error) {
  */
 export async function retainFact(config, content, tags) {
   if (!semanticEnabled(config)) return { ok: true, skipped: true };
-  if (!bankAllowed(config.bankId, config.allowBanks)) return { ok: false, message: `bank ${config.bankId} is not allowed` };
+  if (!bankAllowed(config.bankId, config.allowBanks, config.denyBanks)) return { ok: false, message: `bank ${config.bankId} is not allowed` };
   const operationId = randomUUID();
   const body = JSON.stringify({
     items: [{ content, context: 'Assistant conversation with the user', tags }],
@@ -676,6 +679,7 @@ function resolveConfig(config) {
     recallMaxTokens: positiveInt(raw.recallMaxTokens, DEFAULTS.recallMaxTokens, 4000),
     minScore: numberInRange(raw.minScore, DEFAULTS.minScore, 0, 1),
     allowBanks: list(raw.allowBanks, ALLOWED_BANKS),
+    denyBanks: list(raw.denyBanks, DENIED_BANKS),
     probe: raw.probe !== false,
     inject: raw.inject !== false,
   };
@@ -832,7 +836,7 @@ function buildTools(ctx, config) {
  */
 export function apply(ctx, config) {
   const resolved = resolveConfig(config);
-  if (semanticEnabled(resolved) && !bankAllowed(resolved.bankId, resolved.allowBanks)) {
+  if (semanticEnabled(resolved) && !bankAllowed(resolved.bankId, resolved.allowBanks, resolved.denyBanks)) {
     console.error(
       `[dsh-memory] refusing bank "${resolved.bankId}": allowed banks are ${resolved.allowBanks.join(', ')}; ` +
         'no memory tools or prompt block registered',

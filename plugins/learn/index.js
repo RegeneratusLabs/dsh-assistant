@@ -1,9 +1,9 @@
 /**
- * dsh-learn — background self-improvement for a assistant.
+ * dsh-learn — background self-improvement for an assistant.
  *
  * WHY THIS EXISTS
- * The memory plugin can store what the model is told to store, but a personal
- * assistant should notice a correction or a durable fact on its own. Hermes runs
+ * The memory plugin can store what the model is told to store, but an assistant
+ * should notice a correction or a durable fact on its own. Hermes runs
  * a review after each turn that writes memory and creates/patches skills; the
  * harness already exposes the seams for the same loop: durable `turn/end`
  * events, `ctx.llm.stream()` for an auxiliary call, skills as plain files under
@@ -410,6 +410,7 @@ function semanticConfig(config) {
     apiUrl: status.apiUrl,
     bankId: status.bank,
     allowBanks: [status.bank],
+    denyBanks: Array.isArray(status.denyBanks) ? status.denyBanks : [],
     timeoutMs: config.timeoutMs,
     profilePath: config.profilePath,
     statusPath: path.join(config.home, 'memory', 'status.json'),
@@ -439,7 +440,7 @@ function reviewBudgetAllows(config) {
 /** Instructions the curator model reads once per review. */
 function systemPrompt(maxMemory) {
   return [
-    'You are the background curator for a assistant.',
+    'You are the background curator for an assistant.',
     'Read one completed turn and reply with JSON only, no prose.',
     'Record only durable, user-relevant facts: stated preferences, decisions, corrections, people, projects and constraints.',
     'Never record transient task state, tool output, credentials, or anything already present in the memory profile.',

@@ -1,7 +1,7 @@
 # dsh-assistant
 
-A assistant built on [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness).
-Everything is a plugin: identity, memory, the browser, and later the channel.
+An assistant profile for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness).
+Everything is a plugin: identity, memory, learning, browsing and connectors.
 
 Early. One profile, five plugins, no channel yet.
 
@@ -25,20 +25,9 @@ Open the printed URL, go to **Settings → Models**, add a model key. Then:
 npm run doctor
 ```
 
-`setup` creates `~/.dsh-assistant` (0700), links the two local plugins, installs the
+`setup` creates `~/.dsh-assistant` (0700), links the local plugins, installs the
 pinned browser plugin, and writes the telemetry-off patch. It never touches an
 existing DSH home or the host.
-
-## This machine
-
-The assistant runs as the `dsh-assistant.service` user unit: home `~/.dsh-assistant`,
-profile `personal`, port 7002, tailnet `https://127.0.0.1:7310/`.
-After changing plugin code:
-
-```sh
-systemctl --user restart dsh-assistant.service
-node bin/assistant.mjs doctor --home ~/.dsh-assistant --name personal
-```
 
 ## What is installed
 
@@ -55,8 +44,9 @@ node bin/assistant.mjs doctor --home ~/.dsh-assistant --name personal
 - Data lives in `~/.dsh-assistant/`, mode 0700: soul, memory, sessions, credentials.
 - Telemetry egress is off by default; the profile patch is `config/telemetry-off.patch.yml`.
 - Memory is local. Semantic memory is off unless you set `apiUrl` on the memory row.
-- Semantic memory is scoped to its own Hindsight bank (`dsh-assistant`). The plugin refuses
-  any other bank, including another assistant's `another-agent` or `another-agent-*` banks.
+- Semantic memory is scoped to a Hindsight bank (`dsh-assistant` by default). Widen
+  `allowBanks` deliberately; set `denyBanks` to fence off any bank that is not this
+  assistant's, including another agent's.
 - Learning writes only inside `$DSH_HOME/{memory,skills,learning}`; it never edits `SOUL.md`,
   profile config or host state. Every change is recorded in `learning/audit.jsonl`, and a
   replaced skill keeps up to five previous versions under `skills/.history/`.
