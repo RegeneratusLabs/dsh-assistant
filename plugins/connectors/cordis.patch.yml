@@ -1,0 +1,6 @@
+# Bundle patch for the Connectors page: one Host row serves the owner-gated
+# /api/connectors routes and registers the Composio session MCP; its `dsh.client`
+# declaration loads the browser half that owns the sidebar entry.
+- insert:
+    - id: dsh-connectors
+      name: '@local/dsh-connectors'

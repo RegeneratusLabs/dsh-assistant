@@ -1,0 +1,32 @@
+{
+  "name": "@local/dsh-connectors",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Connectors page for the assistant: a Composio-backed OAuth catalog with Connect/Disconnect, a session MCP that exposes the connected apps as tools, and the live MCP server fleet with probe/restart.",
+  "type": "module",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "composio.js",
+    "client.js",
+    "cordis.patch.yml"
+  ],
+  "dsh": {
+    "manifestVersion": 1,
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-sidebar",
+        "@deepseek-ai/dsh-client-ui-layout"
+      ]
+    }
+  }
+}
