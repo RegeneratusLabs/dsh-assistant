@@ -276,6 +276,22 @@ assert.equal(bare.image, undefined);
 assert.match(bare.message, /Image not attached/);
 pass('render_view renders, checks, and attaches the image in one call');
 
+// ── output paths stay under the configured output directory ─────────────────
+// The model names these paths; an unconfined resolve would let one tool call
+// write anywhere the process user can write. Approvals gate the call, the
+// confinement makes the promise hold by construction.
+const escapeDownload = await say({ action: 'download', url: 'https://example.org/poster.pdf', to: `${ROOT}-escape.pdf` });
+assert.match(escapeDownload, /must stay under/);
+const escapeHtmlRender = await render.execute({ html: artHtml, png: `${ROOT}-escape.png` });
+assert.match(escapeHtmlRender.message, /must stay under/);
+const escapeView = await viewTool.execute({ html: artHtml, png: '/escape.png' }, { agent: { options: { provider: 'p', model: 'm' } } });
+assert.match(escapeView.message, /must stay under/);
+assert.ok(!existsSync('/escape.png'), 'an escaping png is never written');
+const nested = await viewTool.execute({ html: artHtml, png: 'nested/deep.png' }, { agent: { options: { provider: 'p', model: 'm' } } });
+assert.match(nested.message, /Rendered/);
+assert.ok(existsSync(path.join(artDir, 'nested', 'deep.png')), 'a relative png lands under the output dir');
+pass('download and render destinations are confined to the output dir');
+
 server.close();
 rmSync(ROOT, { recursive: true, force: true });
 process.stdout.write('OK dsh-browse selftest\n');

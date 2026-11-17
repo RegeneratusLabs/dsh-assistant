@@ -305,6 +305,25 @@ function humanBytes(bytes) {
 }
 
 /**
+ * Resolve a caller-supplied output path, confining it to the output directory.
+ *
+ * The model names these paths (download `to`, render `pdf`/`png`), so an
+ * unconfined resolve would let one tool call write anywhere the process user
+ * can write. An explicit path may be relative to the output dir or absolute
+ * inside it; anything else is refused by the caller rather than redirected.
+ * @param {string} value - the caller's path.
+ * @param {string} outputDir - resolved output directory from the row config.
+ * @returns {string|null} absolute path inside the output dir, or null when it escapes.
+ */
+function confineOutput(value, outputDir) {
+  const root = path.resolve(outputDir);
+  const target = path.resolve(root, String(value));
+  const rel = path.relative(root, target);
+  if (rel === '' || rel.startsWith('..') || path.isAbsolute(rel)) return null;
+  return target;
+}
+
+/**
  * Build the `browse` and `render_html` tool definitions.
  *
  * @param {object} config - resolved settings from {@link resolveConfig}.
@@ -366,7 +385,7 @@ export function buildTools(config, deps = {}) {
         key: { type: 'string', description: 'Key name for `press`, e.g. Enter or Escape.' },
         fullPage: { type: 'boolean', description: 'Capture the whole page height for `screenshot`.' },
         filter: { type: 'string', enum: ['all', 'assets'], description: 'For `links`: all anchors, or only documents/archives/images.' },
-        to: { type: 'string', description: 'Destination file path for `download`. Default: under the browse output directory.' },
+        to: { type: 'string', description: 'Destination file path for `download`; must stay under the browse output directory. Default: the output directory.' },
       },
       required: ['action'],
     },
@@ -441,6 +460,11 @@ export function buildTools(config, deps = {}) {
         if (action === 'download') {
           const url = String(args.url ?? '');
           if (!/^https?:\/\//i.test(url)) return { message: `download needs an absolute http(s) URL, got "${url}".` };
+          let target = '';
+          if (args.to) {
+            target = confineOutput(String(args.to), config.outputDir) ?? '';
+            if (target === '') return { message: `download "to" must stay under ${path.resolve(config.outputDir)}.` };
+          }
           const tabId = await ensureTab(exec, args.tab);
           const before = new Set(linkList(await client.downloads(config.userId).then((r) => r.data).catch(() => ({ links: [] }))).map((d) => d.id));
           await client.navigate(config.userId, tabId, url);
@@ -452,10 +476,10 @@ export function buildTools(config, deps = {}) {
             if (fresh) {
               const bytes = await client.downloadContent(config.userId, fresh.id);
               const fallbackName = String(fresh.name ?? url.split('/').pop() ?? 'download').replace(/[^\w.-]+/g, '_');
-              const target = path.resolve(String(args.to ?? path.join(config.outputDir, fallbackName)));
-              await mkdir(path.dirname(target), { recursive: true });
-              await writeFile(target, bytes);
-              return { message: `Saved ${target} (${humanBytes(bytes.length)}).` };
+              const finalTarget = target || path.join(config.outputDir, fallbackName);
+              await mkdir(path.dirname(finalTarget), { recursive: true });
+              await writeFile(finalTarget, bytes);
+              return { message: `Saved ${finalTarget} (${humanBytes(bytes.length)}).` };
             }
             await new Promise((resolve) => setTimeout(resolve, 500));
           }
@@ -485,8 +509,8 @@ export function buildTools(config, deps = {}) {
       additionalProperties: false,
       properties: {
         html: { type: 'string', description: 'Path to the HTML file (relative paths resolve against the process cwd).' },
-        pdf: { type: 'string', description: 'Output PDF path. Default: the HTML path with a .pdf extension.' },
-        png: { type: 'string', description: 'Output PNG path. When given, a screenshot is taken instead of a PDF.' },
+        pdf: { type: 'string', description: 'Output PDF path; must stay under the browse output directory. Default: the HTML basename with a .pdf extension, in the output directory.' },
+        png: { type: 'string', description: 'Output PNG path; must stay under the browse output directory. When given, a screenshot is taken instead of a PDF.' },
         width: { type: 'number', description: 'PNG viewport width in CSS px (ignored for PDF). Default 1280.' },
         height: { type: 'number', description: 'PNG viewport height in CSS px (ignored for PDF). Default 900.' },
         scale: { type: 'number', description: 'Device scale factor for PNG output. Default 2.' },
@@ -500,15 +524,23 @@ export function buildTools(config, deps = {}) {
     async execute(args) {
       const html = path.resolve(String(args.html ?? ''));
       if (!existsSync(html)) return { message: `No such HTML file: ${html}` };
+      let output = path.join(config.outputDir, `${path.basename(html).replace(/\.html?$/i, '')}.pdf`);
+      let refused = '';
+      if (args.png) {
+        output = confineOutput(String(args.png), config.outputDir);
+        refused = 'png';
+      } else if (args.pdf) {
+        output = confineOutput(String(args.pdf), config.outputDir);
+        refused = 'pdf';
+      }
+      if (!output) return { message: `render_html "${refused}" must stay under ${path.resolve(config.outputDir)}.` };
       if (config.chromeBinary === '') return { message: 'No chromium headless shell found under ~/.cache/ms-playwright; set DSH_BROWSE_CHROME to a binary.' };
-      const png = args.png ? path.resolve(String(args.png)) : '';
-      const output = png || path.resolve(String(args.pdf ?? html.replace(/\.html?$/i, '') + '.pdf'));
       await mkdir(path.dirname(output), { recursive: true });
       const argv = buildChromeArgs({
         chrome: config.chromeBinary,
         html,
         output,
-        mode: png ? 'png' : 'pdf',
+        mode: args.png ? 'png' : 'pdf',
         width: Number(args.width ?? 1280),
         height: Number(args.height ?? 900),
         scale: Number(args.scale ?? 2),
@@ -539,7 +571,7 @@ export function buildTools(config, deps = {}) {
       additionalProperties: false,
       properties: {
         html: { type: 'string', description: 'Path to the HTML file (relative paths resolve against the process cwd).' },
-        png: { type: 'string', description: 'Output PNG path. Default: the HTML path with a .png extension.' },
+        png: { type: 'string', description: 'Output PNG path; must stay under the browse output directory. Default: the HTML basename with a .png extension, in the output directory.' },
         width: { type: 'number', description: 'Viewport width in CSS px. Default: the document body width from the layout probe, else 1280.' },
         height: { type: 'number', description: 'Viewport height in CSS px. Default: the document body height from the layout probe, else 900.' },
         scale: { type: 'number', description: 'Device scale factor. Default 2.' },
@@ -578,6 +610,10 @@ export function buildTools(config, deps = {}) {
     async execute(args, exec) {
       const html = path.resolve(String(args.html ?? ''));
       if (!existsSync(html)) return { message: `No such HTML file: ${html}` };
+      const png = args.png
+        ? confineOutput(String(args.png), config.outputDir)
+        : path.join(config.outputDir, `${path.basename(html).replace(/\.html?$/i, '')}.png`);
+      if (!png) return { message: `render_view "png" must stay under ${path.resolve(config.outputDir)}.` };
       if (config.chromeBinary === '') {
         return { message: 'No chromium headless shell found under ~/.cache/ms-playwright; set DSH_BROWSE_CHROME to a binary.' };
       }
@@ -629,7 +665,6 @@ export function buildTools(config, deps = {}) {
       const width = Math.round(Number(args.width) || Number(probe?.w) || 1280);
       const height = Math.round(Number(args.height) || Number(probe?.h) || 900);
       const scale = Number(args.scale ?? 2) || 2;
-      const png = path.resolve(String(args.png ?? html.replace(/\.html?$/i, '') + '.png'));
       await mkdir(path.dirname(png), { recursive: true });
       const result = await runProcess(
         spawnImpl,
