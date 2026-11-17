@@ -24,6 +24,7 @@ const { apply, resolveConfig } = await import('./index.js');
 const { openStore, OrganiserError } = await import('./store.js');
 const { buildTools } = await import('./tools.js');
 const { addDays, isValidZone, resolveZone, todayIn } = await import('./time.js');
+const { createAutomation, createReminder, leadTime, listAutomations } = await import('./schedule.js');
 
 let failures = 0;
 /** Assert one condition, recording the outcome. */
@@ -221,6 +222,7 @@ try {
   check('plan add saves and reports the id', added.message.startsWith('Saved PLAN-4:'), added.message);
   check('plan update reports the new time', (await planTool.execute({ action: 'update', id: 'PLAN-4', time: '11:30' })).message.includes('11:30'));
   check('plan done reports the status', (await planTool.execute({ action: 'done', id: 'PLAN-4' })).message.startsWith('PLAN-4 done'));
+  check('plan delete reports the id', (await planTool.execute({ action: 'delete', id: 'PLAN-4' })).message.startsWith('Deleted PLAN-4'));
   check(
     'a missing plan is a message, not a throw',
     (await planTool.execute({ action: 'update', id: 'PLAN-99', title: 'x' })).message.startsWith('Not saved: no plan PLAN-99'),
@@ -251,16 +253,97 @@ try {
     (await noteTool.execute({ action: 'list', from: '2026-11-01' })).message.includes('give both from and to'),
   );
 
+  // ── the schedule seam ─────────────────────────────────────────────────────
+  const shifted = leadTime('2026-11-17', '15:00', 30);
+  check('a lead time moves the reminder earlier', shifted.date === '2026-11-17' && shifted.time === '14:30');
+  const midnight = leadTime('2026-11-17', '00:10', 30);
+  check('a lead time carries into the previous day', midnight.date === '2026-11-16' && midnight.time === '23:40', JSON.stringify(midnight));
+
+  const created = [];
+  const edits = [];
+  const fakeSchedule = {
+    async edit(request) {
+      edits.push(request);
+      return { id: request.id, deleted: true };
+    },
+    async create(request) {
+      created.push(request);
+      return { id: `SCHED-${created.length}`, title: request.title, status: 'active', scheduledAt: '2026-11-17T04:30:00Z', ...request.timing };
+    },
+    async catalog() {
+      return [
+        { id: 'A1', title: 'Daily brief', kind: 'daily', time: '07:00:00', timeZone: zone, scheduledAt: '2026-11-18T21:00:00Z', status: 'active' },
+        { id: 'A2', title: 'Finished thing', kind: 'at', scheduledAt: '2026-11-01T00:00:00Z', status: 'ended' },
+      ];
+    },
+  };
+  const scheduleCtx = { get: (name) => (name === 'schedule' ? fakeSchedule : undefined) };
+
+  check(
+    'no schedule service is reported, not thrown',
+    (await listAutomations({})).available === false,
+  );
+  const automationList = await listAutomations(scheduleCtx);
+  check('automations list only active tasks', automationList.tasks.length === 1 && automationList.tasks[0].title === 'Daily brief');
+  check('an automation carries a recurrence label', automationList.tasks[0].recurrence === 'daily 07:00', automationList.tasks[0].recurrence);
+  check('an automation never carries its prompt', !('prompt' in automationList.tasks[0]));
+
+  const reminder = await createReminder(scheduleCtx, {
+    title: 'Dentist',
+    date: '2026-11-17',
+    time: '15:00',
+    leadMinutes: 30,
+    timeZone: zone,
+  });
+  check('a reminder is a one-shot task', created[0].timing.kind === 'at');
+  check('a reminder is delivered into a new conversation', created[0].target.kind === 'new_once');
+  check('a reminder lands at the lead time', created[0].timing.at.date === '2026-11-17' && created[0].timing.at.time === '14:30:00', JSON.stringify(created[0].timing));
+  check('a reminder says what to say', created[0].prompt.includes('Remind the user about "Dentist"'), created[0].prompt);
+  check('a reminder returns the task view', reminder.id === 'SCHED-1' && reminder.title === 'Dentist');
+
+  const autom = await createAutomation(scheduleCtx, {
+    title: 'Supplier research',
+    instruction: 'Find three suppliers for the seed order.',
+    date: '2026-11-17',
+    time: '09:00',
+    repeat: 'daily',
+    timeZone: zone,
+  });
+  check('an automation carries the user instruction', created[1].prompt.startsWith('Find three suppliers'), created[1].prompt);
+  check('a daily automation uses the daily timing', created[1].timing.kind === 'daily' && created[1].timing.daily.time === '09:00:00');
+  check('an automation is delivered into a new conversation', created[1].target.kind === 'new_once');
+  check('an automation returns the task view', autom.title === 'Supplier research');
+
+  await createAutomation(scheduleCtx, { title: 'Weekday brief', instruction: 'Brief me.', date: '2026-11-17', time: '07:00', repeat: 'weekdays', timeZone: zone });
+  check('weekdays map to Monday–Friday', created[2].timing.weekly.weekdays.join(',') === '1,2,3,4,5');
+  await createAutomation(scheduleCtx, { title: 'Weekly review', instruction: 'Review.', date: '2026-11-17', time: '17:00', repeat: 'weekly', timeZone: zone });
+  check('a weekly rule uses the chosen weekday', created[3].timing.weekly.weekdays.join(',') === '2', created[3].timing.weekly.weekdays.join(','));
+
+  const refusing = { get: () => ({ async create() { throw new Error('The scheduled time must be strictly in the future.'); }, async catalog() { return []; } }) };
+  check(
+    'a refused schedule is a 400, not a host fault',
+    (await createReminder(refusing, { title: 'x', date: '2020-01-01', time: '09:00', timeZone: zone }).catch((error) => error))?.status === 400,
+  );
+  check(
+    'a reminder without the service is a clear error',
+    (await createReminder({}, { title: 'x', date: '2026-11-17', time: '15:00', timeZone: zone }).catch((error) => error))?.code === 'schedule_unavailable',
+  );
+
   // ── the routes the page reads ─────────────────────────────────────────────
   const routes = [];
   const disposers = [];
   const ctx = {
     tools: { register: () => {} },
+    get: (name) => (name === 'schedule' ? fakeSchedule : undefined),
     connection: { fetch: { register: async (route) => { routes.push(route); return async () => {}; } } },
     effect: (fn) => { disposers.push(fn()); },
   };
   await apply(ctx, {});
-  check('apply registers three routes', routes.map((route) => route.path).sort().join(',') === '/api/organiser,/api/organiser/note,/api/organiser/plan');
+  check(
+    'apply registers five routes',
+    routes.map((route) => route.path).sort().join(',') === '/api/organiser,/api/organiser/automation,/api/organiser/note,/api/organiser/plan,/api/organiser/reminder',
+    routes.map((route) => route.path).sort().join(','),
+  );
 
   const getRoute = routes.find((route) => route.path === '/api/organiser');
   const response = await getRoute.fetch({ url: '/api/organiser?from=2026-11-17&to=2026-11-18', signal: undefined });
@@ -280,6 +363,14 @@ try {
   const planPayload = await planResponse.json();
   check('the plan route saves a plan', planPayload.ok === true && planPayload.plan.id === 'PLAN-5', JSON.stringify(planPayload));
 
+  const deleteResponse = await planRoute.fetch({
+    url: '/api/organiser/plan',
+    signal: undefined,
+    text: async () => JSON.stringify({ action: 'delete', id: 'PLAN-5' }),
+  });
+  const deletePayload = await deleteResponse.json();
+  check('the plan route withdraws a plan', deletePayload.ok === true && deletePayload.plan.deletedAt !== null, JSON.stringify(deletePayload));
+
   const noteRoute = routes.find((route) => route.path === '/api/organiser/note');
   const noteResponse = await noteRoute.fetch({
     url: '/api/organiser/note',
@@ -296,6 +387,44 @@ try {
   });
   check('an unknown route action is a 400', badResponse.status === 400);
 
+  const afterApply = await getRoute.fetch({ url: '/api/organiser?from=2026-11-17&to=2026-11-18', signal: undefined });
+  const afterPayload = await afterApply.json();
+  check('the range route carries the automations', afterPayload.automations.length === 1 && afterPayload.automationsAvailable === true);
+
+  const reminderRoute = routes.find((route) => route.path === '/api/organiser/reminder');
+  const reminderResponse = await reminderRoute.fetch({
+    url: '/api/organiser/reminder',
+    signal: undefined,
+    text: async () => JSON.stringify({ title: 'Dentist', date: '2026-11-18', time: '15:00', leadMinutes: 60, timeZone: zone }),
+  });
+  const reminderPayload = await reminderResponse.json();
+  check('the reminder route creates a task', reminderPayload.ok === true && reminderPayload.task.title === 'Dentist', JSON.stringify(reminderPayload));
+
+  const automationRoute = routes.find((route) => route.path === '/api/organiser/automation');
+  const automationResponse = await automationRoute.fetch({
+    url: '/api/organiser/automation',
+    signal: undefined,
+    text: async () => JSON.stringify({ title: 'Supplier research', instruction: 'Find three suppliers.', date: '2026-11-18', time: '09:00', repeat: 'once', timeZone: zone }),
+  });
+  const automationPayload = await automationResponse.json();
+  check('the automation route creates a task', automationPayload.ok === true && automationPayload.task.title === 'Supplier research', JSON.stringify(automationPayload));
+
+  const deleteAutomation = await automationRoute.fetch({
+    url: '/api/organiser/automation',
+    signal: undefined,
+    text: async () => JSON.stringify({ action: 'delete', id: 'A1' }),
+  });
+  const deleteAutomationPayload = await deleteAutomation.json();
+  check('the automation route deletes a task', deleteAutomationPayload.ok === true && deleteAutomationPayload.deleted === true);
+  check('the delete reaches the schedule service', edits.some((edit) => edit.id === 'A1' && edit.action === 'delete'), JSON.stringify(edits));
+
+  const refused = await automationRoute.fetch({
+    url: '/api/organiser/automation',
+    signal: undefined,
+    text: async () => JSON.stringify({ title: 'No instruction', date: '2026-11-18', time: '09:00', timeZone: zone }),
+  });
+  check('an automation without an instruction is a 400', refused.status === 400);
+
   // ── the config path ───────────────────────────────────────────────────────
   const resolved = resolveConfig({});
   check('the store lives under the home calendar dir', resolved.dbPath === dbPath, resolved.dbPath);
@@ -306,6 +435,11 @@ try {
   const dirMode = statSync(path.join(home, 'calendar')).mode & 0o777;
   check('the data directory is private', dirMode === 0o700, dirMode.toString(8));
   check('the store created its file', readdirSync(path.join(home, 'calendar')).some((name) => name.startsWith('plans.db')));
+
+  const doomed = store.addPlan({ date: '2026-11-22', title: 'Throw this away' });
+  const removed = store.deletePlan(doomed.id);
+  check('delete withdraws the plan from every list', removed.deletedAt !== null && store.listPlans({ from: '2026-11-22', to: '2026-11-22', status: 'all' }).every((plan) => plan.id !== doomed.id));
+  check('a withdrawn plan still reads by id', store.getPlan(doomed.id).deletedAt !== null);
 
   for (const dispose of disposers) if (typeof dispose === 'function') dispose();
 } finally {
@@ -345,6 +479,15 @@ check(
 );
 check('the same instant is still the 17th in UTC', L.eventDay({ start: '2026-11-17T23:30:00Z' }, 'UTC') === '2026-11-17');
 check('a note preview is its first non-empty line', L.notePreview('\nfirst line\nsecond') === 'first line');
+check(
+  'a calendar keeps one colour and calendars differ',
+  L.calendarColor('Work') === L.calendarColor('Work') && L.calendarColor('Work') !== L.calendarColor('Personal'),
+);
+check('minutes are read in the user zone', L.minutesOf('2026-11-17T09:30:00+10:00', 'Australia/Brisbane') === 570);
+check('minutes follow the zone, not the offset', L.minutesOf('2026-11-17T23:30:00Z', 'UTC') === 1410);
+const packed = L.packLanes([{ start: 540, end: 600 }, { start: 570, end: 630 }, { start: 600, end: 660 }]);
+check('overlapping blocks take separate lanes', packed.lanes === 2 && packed.placed[1].lane === 1, JSON.stringify(packed.placed));
+check('the mini month shows the ISO week', L.weekNumber('2026-11-17') === 47, String(L.weekNumber('2026-11-17')));
 check(
   'a long preview is cut to length with an ellipsis',
   L.notePreview('x'.repeat(90), 20).length === 20 && L.notePreview('x'.repeat(90), 20).endsWith('…'),

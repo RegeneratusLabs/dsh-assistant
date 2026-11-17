@@ -203,12 +203,12 @@ export function buildTools({ store, zone, provider = null }) {
   const plan = {
     name: 'organiser_plan',
     description:
-      "Keep, change, finish or drop a plan — something the user intends to do that is not on their calendar yet. Record only what they actually said: never invent a date or a time, and leave the time empty when they gave none. Use action 'add' with a date and title, 'update' with an id to correct it, 'done' or 'drop' when it is finished or abandoned. This does not write to the connected calendar; events are made from the organiser page.",
+      "Keep, change, finish, drop or delete a plan — something the user intends to do that is not on their calendar yet. Record only what they actually said: never invent a date or a time, and leave the time empty when they gave none. Use action 'add' with a date and title, 'update' with an id to correct it, 'done' or 'drop' when it is finished or abandoned, and 'delete' to remove it entirely. This does not write to the connected calendar; events are made from the organiser page.",
     parameters: {
       type: 'object',
       additionalProperties: false,
       properties: {
-        action: { type: 'string', enum: ['add', 'update', 'done', 'drop'], description: 'What to do with the plan.' },
+        action: { type: 'string', enum: ['add', 'update', 'done', 'drop', 'delete'], description: 'What to do with the plan.' },
         id: { type: 'string', description: 'The plan id, for update/done/drop.' },
         date: { type: 'string', description: 'The day, YYYY-MM-DD.' },
         time: { type: 'string', description: 'Optional local time, HH:MM (24-hour). An empty string clears it.' },
@@ -234,11 +234,15 @@ export function buildTools({ store, zone, provider = null }) {
           const saved = store.updatePlan(raw.id, patch);
           return { message: `Updated ${saved.id}: ${saved.date} ${planLine(saved)}` };
         }
+        if (raw.action === 'delete') {
+          const saved = store.deletePlan(raw.id);
+          return { message: `Deleted ${saved.id}${saved.date ? ` (${saved.date})` : ''}.` };
+        }
         if (raw.action === 'done' || raw.action === 'drop') {
           const saved = store.setPlanStatus(raw.id, raw.action === 'done' ? 'done' : 'dropped');
           return { message: `${saved.id} ${saved.status}: ${saved.date} ${planLine(saved)}` };
         }
-        return { message: `Not saved: "${String(raw.action)}" is not add, update, done or drop.` };
+        return { message: `Not saved: "${String(raw.action)}" is not add, update, done, drop or delete.` };
       } catch (error) {
         if (error instanceof OrganiserError) return { message: `Not saved: ${error.message}` };
         return { message: `Not saved: ${String(error?.message ?? error)}` };

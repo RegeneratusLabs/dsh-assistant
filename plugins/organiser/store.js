@@ -114,6 +114,7 @@ export function openStore(file) {
       status      TEXT NOT NULL DEFAULT 'open',
       event_id    TEXT,
       event_source TEXT,
+      deleted_at  TEXT,
       created     TEXT NOT NULL,
       updated     TEXT NOT NULL
     );
@@ -131,6 +132,9 @@ export function openStore(file) {
     CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
   `);
 
+  const planColumns = db.prepare('PRAGMA table_info(plans)').all().map((row) => row.name);
+  if (!planColumns.includes('deleted_at')) db.exec('ALTER TABLE plans ADD COLUMN deleted_at TEXT');
+
   const statements = {
     planInsert: db.prepare(
       'INSERT INTO plans (id, date, time, title, notes, status, event_id, event_source, created, updated) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?)',
@@ -138,7 +142,7 @@ export function openStore(file) {
     planById: db.prepare('SELECT * FROM plans WHERE id = ?'),
     planList: db.prepare(
       `SELECT * FROM plans
-        WHERE event_id IS NULL AND date >= ? AND date <= ? AND (? = 'all' OR status = 'open')
+        WHERE event_id IS NULL AND deleted_at IS NULL AND date >= ? AND date <= ? AND (? = 'all' OR status = 'open')
         ORDER BY date, COALESCE(time, '99:99'), id`,
     ),
     noteInsert: db.prepare('INSERT INTO notes (id, date, body, created, updated, deleted_at) VALUES (?, ?, ?, ?, ?, NULL)'),
@@ -196,6 +200,7 @@ export function openStore(file) {
       status: row.status,
       eventId: row.event_id ?? null,
       eventSource: row.event_source ?? null,
+      deletedAt: row.deleted_at ?? null,
       created: row.created,
       updated: row.updated,
     };
@@ -264,6 +269,14 @@ export function openStore(file) {
     if (!sets.length) return current;
     values.push(now(), current.id);
     db.prepare(`UPDATE plans SET ${sets.join(', ')}, updated = ? WHERE id = ?`).run(...values);
+    return getPlan(current.id);
+  }
+
+  /** Withdraw a plan from every view; the row stays, so a mistaken delete is recoverable in the file. */
+  function deletePlan(id) {
+    const current = getPlan(id);
+    if (current.deletedAt) return current;
+    db.prepare('UPDATE plans SET deleted_at = ?, updated = ? WHERE id = ?').run(now(), now(), current.id);
     return getPlan(current.id);
   }
 
@@ -417,6 +430,7 @@ export function openStore(file) {
     addPlan,
     updatePlan,
     setPlanStatus,
+    deletePlan,
     promotePlan,
     listPlans,
     getPlan,

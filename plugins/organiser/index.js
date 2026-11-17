@@ -20,6 +20,7 @@ import path from 'node:path';
 import { openStore, OrganiserError } from './store.js';
 import { buildTools } from './tools.js';
 import { resolveZone, todayIn } from './time.js';
+import { createAutomation, createReminder, listAutomations, scheduleService } from './schedule.js';
 
 export const name = 'dsh-organiser';
 
@@ -137,6 +138,7 @@ export async function apply(ctx, config) {
 
       const plans = store.listPlans({ from, to, status });
       const notes = store.listNotes({ limit: 500 });
+      const automationState = await listAutomations(ctx);
 
       let events = [];
       let calendar = { connected: false, error: null };
@@ -159,6 +161,9 @@ export async function apply(ctx, config) {
         plans,
         events,
         notes,
+        automations: automationState.tasks,
+        automationsAvailable: automationState.available,
+        automationError: automationState.error ?? null,
       });
     }),
   });
@@ -182,6 +187,9 @@ export async function apply(ctx, config) {
       }
       if (action === 'done' || action === 'drop' || action === 'open') {
         return json({ ok: true, plan: store.setPlanStatus(body.id, action) });
+      }
+      if (action === 'delete') {
+        return json({ ok: true, plan: store.deletePlan(body.id) });
       }
       return fail(400, `unknown plan action "${action}"`, 'invalid_action');
     }),
@@ -209,11 +217,47 @@ export async function apply(ctx, config) {
     }),
   });
 
+  const reminderRoute = await ctx.connection.fetch.register({
+    path: '/api/organiser/reminder',
+    methods: ['POST'],
+    requestBody: 'buffered',
+    fetch: guard(async (request) => {
+      const body = await readJson(request);
+      const task = await createReminder(ctx, body);
+      return json({ ok: true, task });
+    }),
+  });
+
+  const automationRoute = await ctx.connection.fetch.register({
+    path: '/api/organiser/automation',
+    methods: ['POST'],
+    requestBody: 'buffered',
+    fetch: guard(async (request) => {
+      const body = await readJson(request);
+      if (body.action === 'delete') {
+        const service = scheduleService(ctx);
+        if (!service) throw new OrganiserError('the Schedule service is not available on this Host', 'schedule_unavailable', 409);
+        const id = typeof body.id === 'string' ? body.id.trim() : '';
+        if (!id) throw new OrganiserError('a task id is required', 'missing_id');
+        try {
+          const result = await service.edit({ id, action: 'delete' });
+          return json({ ok: true, deleted: 'deleted' in result ? result.deleted === true : true });
+        } catch (error) {
+          throw new OrganiserError(String(error?.message ?? error).slice(0, 300), 'schedule_rejected', 400);
+        }
+      }
+      const task = await createAutomation(ctx, body);
+      return json({ ok: true, task });
+    }),
+  });
+
   ctx.effect(
     () => () => {
       void read();
       void planRoute();
       void noteRoute();
+      void reminderRoute();
+      void automationRoute();
     },
     'dsh-organiser: /api routes',
   );

@@ -73,6 +73,38 @@ window.__ModuleLoader__.load({
       inMonth: 'more',
       emptyDay: 'Nothing this day.',
       panelHint: 'Plans and notes stay in this home. Events come from your calendar.',
+      automations: 'Automations',
+      newAutomation: 'New automation',
+      automationName: 'Name',
+      automationInstruction: 'What should it do?',
+      automationHint: 'Runs in a new conversation, then reports back here.',
+      automationEmpty: 'No automations today.',
+      automationUnavailable: 'Automations are not available on this Host.',
+      remindMe: 'Send me a chat message',
+      atTheTime: 'at the time',
+      minutesBefore: 'min before',
+      reminderSet: 'Plan saved, reminder set.',
+      planSaved: 'Plan saved.',
+      scheduleFailed: 'Could not schedule the reminder',
+      automationCreated: 'Automation created.',
+      repeat: 'Repeat',
+      once: 'Once',
+      daily: 'Daily',
+      weekdays: 'Weekdays',
+      weekly: 'Weekly',
+      week: 'Week',
+      upNext: 'Up next',
+      nothingUpcoming: 'Nothing coming up.',
+      allDayLabel: 'all day',
+      nextRun: 'Next run',
+      manageInAutomation: 'Manage in Automation tasks',
+      dayNote: 'Note',
+      reopen: 'Reopen',
+      delete: 'Delete',
+      confirmDelete: 'Delete for good?',
+      deleted: 'Deleted.',
+      deleteFailed: 'Could not delete',
+      connectToEdit: 'Connect a calendar to change this event.',
     };
 
     const zh = {
@@ -117,6 +149,38 @@ window.__ModuleLoader__.load({
       inMonth: '条',
       emptyDay: '这一天没有安排。',
       panelHint: '计划和笔记留在这个家里。日程来自你连接的日历。',
+      automations: '自动化',
+      newAutomation: '新建自动化',
+      automationName: '名称',
+      automationInstruction: '要它做什么？',
+      automationHint: '会在新会话中运行，并把结果回报在这里。',
+      automationEmpty: '今天没有自动化。',
+      automationUnavailable: '此宿主未启用自动化。',
+      remindMe: '给我发一条消息',
+      atTheTime: '准时',
+      minutesBefore: '分钟前',
+      reminderSet: '计划已保存，提醒已设置。',
+      planSaved: '计划已保存。',
+      scheduleFailed: '无法设置提醒',
+      automationCreated: '自动化已创建。',
+      repeat: '重复',
+      once: '一次',
+      daily: '每天',
+      weekdays: '工作日',
+      weekly: '每周',
+      week: '周',
+      upNext: '接下来',
+      nothingUpcoming: '接下来没有安排。',
+      allDayLabel: '全天',
+      nextRun: '下次运行',
+      manageInAutomation: '在“自动化”中管理',
+      dayNote: '笔记',
+      reopen: '重新打开',
+      delete: '删除',
+      confirmDelete: '确认删除？',
+      deleted: '已删除。',
+      deleteFailed: '无法删除',
+      connectToEdit: '连接日历后可修改该日程。',
     };
 
     /* ── dates: plain YYYY-MM-DD strings, UTC arithmetic, no Date drift ───── */
@@ -233,6 +297,64 @@ window.__ModuleLoader__.load({
       return text.length > max ? `${text.slice(0, max - 1)}…` : text;
     }
 
+    /**
+     * A colour per calendar, derived from its name.
+     *
+     * Google sends its own palette with the provider; until then a stable hash
+     * keeps Work blue and Personal terracotta across views, and the same event
+     * never changes colour between renders.
+     */
+    const PALETTE = Object.freeze(['#2f6feb', '#c0623d', '#2c8f6b', '#7b5cff', '#a8791a', '#0e7490', '#a2376b', '#5b7f2a', '#9a4f0f', '#4b5563']);
+
+    function calendarColor(name) {
+      const text = String(name ?? 'Calendar');
+      let hash = 0;
+      for (let index = 0; index < text.length; index += 1) hash = (hash * 31 + text.charCodeAt(index)) >>> 0;
+      return PALETTE[hash % PALETTE.length];
+    }
+
+    /** Minutes since local midnight for an instant, in `zone`. */
+    function minutesOf(iso, zone) {
+      const ms = Date.parse(iso);
+      if (!Number.isFinite(ms)) return null;
+      const parts = new Intl.DateTimeFormat('en-GB', {
+        timeZone: zone || undefined,
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+      }).formatToParts(new Date(ms));
+      const get = (type) => parts.find((part) => part.type === type)?.value;
+      return Number(get('hour')) * 60 + Number(get('minute'));
+    }
+
+    /** ISO week number for the mini-month caption. */
+    function weekNumber(date) {
+      const target = new Date(`${date}T00:00:00Z`);
+      const day = (target.getUTCDay() + 6) % 7;
+      target.setUTCDate(target.getUTCDate() - day + 3);
+      const first = new Date(Date.UTC(target.getUTCFullYear(), 0, 4));
+      const firstDay = (first.getUTCDay() + 6) % 7;
+      first.setUTCDate(first.getUTCDate() - firstDay + 3);
+      return 1 + Math.round((target - first) / (7 * 86400000));
+    }
+
+    /** Greedy lane packing so overlapping blocks sit side by side. */
+    function packLanes(items) {
+      const laneEnds = [];
+      const placed = [];
+      for (const item of items) {
+        let lane = laneEnds.findIndex((end) => end <= item.start);
+        if (lane === -1) {
+          lane = laneEnds.length;
+          laneEnds.push(item.end);
+        } else {
+          laneEnds[lane] = item.end;
+        }
+        placed.push({ ...item, lane });
+      }
+      return { placed, lanes: Math.max(1, laneEnds.length) };
+    }
+
     /* ── the Host routes ──────────────────────────────────────────────────── */
 
     async function call(relative, init) {
@@ -266,7 +388,7 @@ window.__ModuleLoader__.load({
 
     const CSS = `
 .org-page {
-  height: 100%; overflow: auto; color: var(--dsw-alias-label-primary, #111827);
+  height: 100%; overflow: auto; display: flex; flex-direction: column; color: var(--dsw-alias-label-primary, #111827);
   font-family: inherit;
 }
 .org-head {
@@ -354,7 +476,8 @@ window.__ModuleLoader__.load({
 .org-event {
   display: grid; grid-template-columns: 92px minmax(0, 1fr) auto; align-items: center; gap: 12px;
   padding: 9px 12px; border: 1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.24));
-  border-left: 3px solid var(--dsw-alias-brand-primary, #3b6ef6); border-radius: 8px;
+  border-left: 3px solid var(--org-ev, var(--dsw-alias-brand-primary, #3b6ef6)); border-radius: 8px;
+  background: color-mix(in srgb, var(--org-ev, transparent) 6%, transparent);
 }
 .org-mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; color: var(--dsw-alias-label-secondary, #6b7280); white-space: nowrap; }
 .org-etitle { font-size: 13.5px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -457,13 +580,115 @@ window.__ModuleLoader__.load({
 .org-cell .dn { font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .org-cell.today .dn { color: var(--dsw-alias-brand-primary, #3b6ef6); }
 .org-mi { display: flex; align-items: center; gap: 5px; font-size: 10.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.org-mi .dot { width: 5px; height: 5px; border-radius: 50%; flex: none; background: var(--dsw-alias-brand-primary, #3b6ef6); }
+.org-mi .dot { width: 5px; height: 5px; border-radius: 50%; flex: none; background: var(--org-ev, var(--dsw-alias-brand-primary, #3b6ef6)); }
 .org-mi.plan { color: var(--dsw-alias-label-secondary, #6b7280); }
 .org-mi.plan .dot { background: transparent; border: 1.2px solid var(--dsw-alias-label-tertiary, #9ca3af); }
 .org-more { font-size: 10px; color: var(--dsw-alias-label-tertiary, #9ca3af); }
 
 .org-empty { padding: 40px 22px; font-size: 13px; color: var(--dsw-alias-label-tertiary, #9ca3af); }
 .org-retry { margin-left: 10px; border: 1px solid currentColor; background: transparent; color: inherit; border-radius: 6px; padding: 2px 9px; font: inherit; font-size: 12px; cursor: pointer; }
+
+.org-page { --org-auto: #7b5cff; }
+.org-auto { display: grid; grid-template-columns: 16px 62px minmax(0, 1fr) auto; gap: 9px; align-items: center; padding: 5px 2px; }
+.org-auto .glyph { color: var(--org-auto); font-size: 12px; }
+.org-auto .title { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.org-auto .when { font-size: 10.5px; color: var(--dsw-alias-label-tertiary, #9ca3af); white-space: nowrap; }
+.org-form { display: flex; flex-direction: column; gap: 6px; }
+.org-formrow { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.org-remind { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--dsw-alias-label-secondary, #6b7280); }
+.org-remind input { accent-color: var(--dsw-alias-brand-primary, #3b6ef6); }
+.org-select { height: 30px; padding: 0 6px; border: 1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.24)); border-radius: 7px; background: transparent; color: inherit; font: inherit; font-size: 12.5px; }
+.org-hint { margin: 0; font-size: 10.5px; color: var(--dsw-alias-label-tertiary, #9ca3af); }
+.org-toast { margin: 10px 18px 0; padding: 7px 11px; border-radius: 8px; font-size: 12px; color: var(--dsw-alias-label-secondary, #6b7280); background: var(--dsw-alias-bg-layer-1, rgba(127,127,127,.06)); border: 1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.24)); }
+.org-mi.auto { color: var(--org-auto); }
+.org-mi.auto .dot { background: var(--org-auto); }
+
+
+/* ── week view ─────────────────────────────────────────────────────────── */
+.org-week { flex: 1; min-height: 0; display: grid; grid-template-columns: 188px minmax(0, 1fr) 288px; }
+.org-side { border-right: 1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.24)); padding: 12px 10px; display: flex; flex-direction: column; gap: 16px; min-height: 0; }
+.org-minihead { display: flex; align-items: baseline; justify-content: space-between; padding: 0 2px 6px; }
+.org-minihead b { font-size: 12px; font-weight: 600; }
+.org-minihead span { font-size: 9.5px; letter-spacing: .07em; text-transform: uppercase; color: var(--dsw-alias-label-tertiary, #9ca3af); }
+.org-mini { display: grid; grid-template-columns: repeat(7, 1fr); gap: 1px 0; }
+.org-mini .h { font-size: 9px; font-weight: 700; color: var(--dsw-alias-label-tertiary, #9ca3af); text-align: center; padding-bottom: 3px; }
+.org-mini button { position: relative; height: 22px; border: 0; background: none; color: var(--dsw-alias-label-primary, #111827); font: inherit; font-size: 10.5px; border-radius: 5px; cursor: pointer; }
+.org-mini button.out { color: var(--dsw-alias-label-tertiary, #9ca3af); }
+.org-mini button.week { background: var(--dsw-alias-bg-layer-1, rgba(127,127,127,.06)); border-radius: 0; }
+.org-mini button.today { background: var(--dsw-alias-brand-primary, #3b6ef6); color: var(--dsw-alias-label-primary-foreground, #fff); font-weight: 700; border-radius: 50%; width: 20px; height: 20px; margin: 1px auto; }
+.org-mini button.sel { box-shadow: inset 0 0 0 1.5px var(--dsw-alias-brand-primary, #3b6ef6); }
+.org-mini button i { position: absolute; bottom: 2px; left: 50%; transform: translateX(-50%); width: 3px; height: 3px; border-radius: 50%; background: var(--dsw-alias-brand-primary, #3b6ef6); }
+.org-mini button.today i { display: none; }
+
+.org-upnext h4 { margin: 0 0 4px; padding: 0 2px; font-size: 9.5px; font-weight: 700; letter-spacing: .09em; text-transform: uppercase; color: var(--dsw-alias-label-tertiary, #9ca3af); }
+.org-nrow { display: grid; grid-template-columns: 9px 1fr; gap: 8px; width: 100%; padding: 6px 2px; border: 0; border-top: 1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.18)); background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; align-items: start; }
+.org-nrow:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(127,127,127,.08)); }
+.org-nrow .d { width: 7px; height: 7px; border-radius: 50%; margin-top: 5px; }
+.org-nrow .d.event { background: var(--org-ev, var(--dsw-alias-brand-primary, #3b6ef6)); }
+.org-nrow .d.plan { background: transparent; border: 1.5px solid var(--dsw-alias-label-tertiary, #9ca3af); }
+.org-nrow .d.auto { background: transparent; border: 1.5px solid var(--org-auto); }
+.org-nrow .w { display: block; font-size: 9px; color: var(--dsw-alias-label-tertiary, #9ca3af); font-family: ui-monospace, monospace; }
+.org-nrow .n { display: block; font-size: 12px; line-height: 1.3; color: var(--dsw-alias-label-primary, #111827); }
+
+.org-gridwrap { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.org-ghead { display: grid; grid-template-columns: 48px repeat(7, minmax(0, 1fr)); height: 48px; flex: none; border-bottom: 1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.24)); }
+.org-ghead .gut { border-right: 1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.18)); }
+.org-gday { display: flex; flex-direction: column; align-items: flex-start; justify-content: center; gap: 1px; padding: 0 8px; border: 0; border-left: 1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.18)); background: none; color: inherit; font: inherit; cursor: pointer; }
+.org-gday:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(127,127,127,.08)); }
+.org-gday .nm { font-size: 9px; font-weight: 700; letter-spacing: .08em; color: var(--dsw-alias-label-tertiary, #9ca3af); }
+.org-gday .nu { font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.org-gday.today .nm, .org-gday.today .nu { color: var(--dsw-alias-brand-primary, #3b6ef6); }
+.org-gall { display: grid; grid-template-columns: 48px repeat(7, minmax(0, 1fr)); min-height: 44px; flex: none; border-bottom: 1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.24)); }
+.org-gall .gut { font-size: 8.5px; letter-spacing: .05em; color: var(--dsw-alias-label-tertiary, #9ca3af); padding: 4px 0 0 6px; border-right: 1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.18)); }
+.org-adcol { border-left: 1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.18)); padding: 4px 3px; display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.org-chip { height: 16px; padding: 0 5px; border-radius: 4px; font-size: 9.5px; font-weight: 600; display: flex; align-items: center; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.org-chip.event { color: var(--org-ev); background: color-mix(in srgb, var(--org-ev) 12%, transparent); border-left: 2px solid var(--org-ev); }
+.org-chip.plan { color: var(--dsw-alias-label-secondary, #6b7280); border: 1px dashed var(--dsw-alias-border-l2, rgba(127,127,127,.4)); }
+.org-gbody { flex: none; height: 720px; display: grid; grid-template-columns: 48px repeat(7, minmax(0, 1fr)); }
+.org-hgut { position: relative; border-right: 1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.18)); }
+.org-hgut span { position: absolute; right: 6px; font-size: 8.5px; color: var(--dsw-alias-label-tertiary, #9ca3af); font-family: ui-monospace, monospace; }
+.org-gcol { position: relative; border-left: 1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.18)); background-image: repeating-linear-gradient(to bottom, transparent 0 47.5px, var(--dsw-alias-border-l1, rgba(127,127,127,.14)) 47.5px 48px); cursor: pointer; }
+.org-gcol.today { background-color: color-mix(in srgb, var(--dsw-alias-brand-primary, #3b6ef6) 3.5%, transparent); }
+.org-block { position: absolute; border-radius: 5px; padding: 3px 5px; overflow: hidden; font-size: 10px; line-height: 1.25; cursor: pointer; text-align: left; font-family: inherit; }
+.org-block .bt { display: block; font-size: 8.5px; font-family: ui-monospace, monospace; opacity: .8; }
+.org-block .bn { display: block; font-weight: 600; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.org-block.event { color: var(--org-ev); background: color-mix(in srgb, var(--org-ev) 13%, transparent); border: 0; border-left: 3px solid var(--org-ev); }
+.org-block.plan { color: var(--dsw-alias-label-secondary, #6b7280); background: transparent; border: 1px dashed var(--dsw-alias-border-l2, rgba(127,127,127,.4)); border-left: 3px dashed var(--dsw-alias-label-tertiary, #9ca3af); }
+.org-block.auto { color: var(--org-auto); background: color-mix(in srgb, var(--org-auto) 9%, transparent); border: 1px dashed color-mix(in srgb, var(--org-auto) 42%, transparent); border-left: 3px dashed var(--org-auto); }
+.org-block.sel { box-shadow: 0 0 0 2px var(--dsw-alias-bg-base, #fff), 0 0 0 3.5px var(--org-ev, var(--dsw-alias-brand-primary, #3b6ef6)); z-index: 3; }
+.org-nowline { position: absolute; left: 0; right: 0; border-top: 1.5px solid #e5484d; z-index: 4; pointer-events: none; }
+.org-nowline i { position: absolute; left: -3px; top: -3.5px; width: 7px; height: 7px; border-radius: 50%; background: #e5484d; }
+.org-nowline span { position: absolute; right: 4px; top: -13px; font-size: 8.5px; font-family: ui-monospace, monospace; color: #e5484d; }
+
+.org-detail { border-left: 1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.24)); background: var(--dsw-alias-bg-layer-1, rgba(127,127,127,.04)); display: flex; flex-direction: column; min-height: 0; overflow: auto; }
+.org-dcard { background: var(--dsw-alias-bg-base, #fff); border-bottom: 1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.24)); border-top: 3px solid var(--org-ev, var(--dsw-alias-brand-primary, #3b6ef6)); padding: 12px 14px; }
+.org-dkind { display: flex; justify-content: space-between; align-items: center; font-size: 9.5px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--org-ev, var(--dsw-alias-brand-primary, #3b6ef6)); }
+.org-dcard h2 { margin: 4px 0 2px; font-size: 15px; font-weight: 600; }
+.org-dwhen { font-size: 11.5px; color: var(--dsw-alias-label-secondary, #6b7280); font-family: ui-monospace, monospace; }
+.org-drow { display: grid; grid-template-columns: 58px 1fr; gap: 6px; font-size: 11.5px; padding: 3px 0; }
+.org-drow .k { font-size: 9.5px; letter-spacing: .05em; text-transform: uppercase; color: var(--dsw-alias-label-tertiary, #9ca3af); padding-top: 1px; }
+.org-dclose { border: 0; background: none; color: var(--dsw-alias-label-tertiary, #9ca3af); cursor: pointer; font: inherit; font-size: 12px; }
+.org-dclose:hover { color: var(--dsw-alias-label-primary, #111827); }
+.org-note-wide { padding: 12px 14px; display: flex; flex-direction: column; gap: 6px; }
+.org-note-wide h4 { margin: 0; font-size: 9.5px; font-weight: 700; letter-spacing: .09em; text-transform: uppercase; color: var(--dsw-alias-label-tertiary, #9ca3af); }
+.org-note-wide textarea { width: 100%; min-height: 120px; resize: vertical; border: 1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.24)); border-radius: 8px; background: var(--dsw-alias-bg-base, #fff); color: inherit; font: inherit; font-size: 12px; line-height: 1.6; padding: 8px; }
+.org-note-wide textarea:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary, #3b6ef6); outline-offset: 1px; }
+
+.org-dactions { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 14px 12px; }
+.org-btn { height: 28px; padding: 0 10px; border: 1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.24)); border-radius: 7px; background: transparent; color: var(--dsw-alias-label-primary, #111827); font: inherit; font-size: 11.5px; cursor: pointer; }
+.org-btn:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(127,127,127,.08)); }
+.org-btn.danger { color: var(--dsw-alias-state-error-primary, #c62828); border-color: color-mix(in srgb, var(--dsw-alias-state-error-primary, #c62828) 40%, transparent); }
+.org-btn.danger.armed { background: var(--dsw-alias-state-error-primary, #c62828); border-color: transparent; color: #fff; }
+.org-trash { margin-left: auto; display: inline-flex; align-items: center; gap: 5px; height: 28px; padding: 0 8px; border: 1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.24)); border-radius: 7px; background: transparent; color: var(--dsw-alias-label-tertiary, #9ca3af); font: inherit; font-size: 11px; cursor: pointer; }
+.org-trash:hover { color: var(--dsw-alias-state-error-primary, #c62828); border-color: color-mix(in srgb, var(--dsw-alias-state-error-primary, #c62828) 40%, transparent); }
+.org-trash.armed { background: var(--dsw-alias-state-error-primary, #c62828); border-color: transparent; color: #fff; }
+.org-trash svg { flex: none; }
+.org-plan.done .org-ptitle { text-decoration: line-through; opacity: .55; }
+.org-check.done { background: var(--dsw-alias-brand-primary, #3b6ef6); border-color: var(--dsw-alias-brand-primary, #3b6ef6); display: grid; place-items: center; }
+.org-check.done::after { content: "✓"; color: var(--dsw-alias-label-primary-foreground, #fff); font-size: 9px; line-height: 1; }
+.org-block.done .bn { text-decoration: line-through; opacity: .55; }
+.org-mi.done { text-decoration: line-through; opacity: .55; }
+.org-dcard h2.struck { text-decoration: line-through; opacity: .6; }
 
 @media (max-width: 980px) {
   .org-cols { grid-template-columns: 116px minmax(0, 1fr); }
@@ -508,23 +733,24 @@ window.__ModuleLoader__.load({
           })();
       return h(
         'div',
-        { className: 'org-event' },
+        { className: 'org-event', style: { '--org-ev': calendarColor(event.calendar) } },
         h('span', { className: 'org-mono' }, time || 'time unknown'),
         h('span', { className: 'org-etitle', title: event.title }, event.title || '(untitled event)'),
         event.calendar ? h('span', { className: 'org-cal' }, event.calendar) : null,
       );
     }
 
-    function PlanRow({ plan, onDone, t }) {
+    function PlanRow({ plan, onToggle, t }) {
+      const done = plan.status === 'done';
       return h(
         'div',
-        { className: 'org-plan' },
+        { className: `org-plan${done ? ' done' : ''}` },
         h('button', {
           type: 'button',
-          className: 'org-check',
-          title: t('markDone'),
-          'aria-label': `${t('markDone')}: ${plan.title}`,
-          onClick: () => onDone(plan.id),
+          className: `org-check${done ? ' done' : ''}`,
+          title: done ? t('reopen') : t('markDone'),
+          'aria-label': `${done ? t('reopen') : t('markDone')}: ${plan.title}`,
+          onClick: () => onToggle(plan),
         }),
         h('span', { className: 'org-mono' }, plan.time ?? 'no time'),
         h('span', { className: 'org-ptitle', title: plan.title }, plan.title),
@@ -532,7 +758,7 @@ window.__ModuleLoader__.load({
       );
     }
 
-    function MonthView({ cursor, today, eventsByDay, plansByDay, zone, t, onOpenDay }) {
+    function MonthView({ cursor, today, eventsByDay, plansByDay, automationsByDay, zone, t, onOpenDay }) {
       const cells = monthCells(cursor);
       return h(
         'div',
@@ -547,9 +773,11 @@ window.__ModuleLoader__.load({
             ...cells.map((cell) => {
               const events = (eventsByDay.get(cell.date) ?? []).slice().sort((a, b) => String(a.start).localeCompare(String(b.start)));
               const plans = plansByDay.get(cell.date) ?? [];
+              const autos = automationsByDay.get(cell.date) ?? [];
               const items = [
-                ...events.map((event) => ({ kind: 'event', key: event.id ?? event.start, title: event.title })),
-                ...plans.map((plan) => ({ kind: 'plan', key: plan.id, title: plan.title })),
+                ...events.map((event) => ({ kind: 'event', key: event.id ?? event.start, title: event.title, color: calendarColor(event.calendar) })),
+                ...plans.map((plan) => ({ kind: 'plan', key: plan.id, title: plan.title, done: plan.status === 'done' })),
+                ...autos.map((task) => ({ kind: 'auto', key: task.id, title: task.title })),
               ];
               const shown = items.slice(0, 3);
               return h(
@@ -565,7 +793,7 @@ window.__ModuleLoader__.load({
                 ...shown.map((item) =>
                   h(
                     'span',
-                    { className: `org-mi${item.kind === 'plan' ? ' plan' : ''}`, key: `${item.kind}:${item.key}` },
+                    { className: `org-mi${item.kind === 'plan' ? ' plan' : item.kind === 'auto' ? ' auto' : ''}${item.done ? ' done' : ''}`, key: `${item.kind}:${item.key}`, style: item.color ? { '--org-ev': item.color } : undefined },
                     h('i', { className: 'dot' }),
                     item.title || '(untitled)',
                   ),
@@ -582,13 +810,340 @@ window.__ModuleLoader__.load({
 
     /* ── the page ─────────────────────────────────────────────────────────── */
 
+
+    /* ── week pieces ──────────────────────────────────────────────────────── */
+
+    const GRID_START = 7;
+    const GRID_END = 22;
+    const GRID_HOUR = 48;
+
+    function MiniMonth({ cursor, today, selected, marks, onPick, t }) {
+      const cells = monthCells(cursor);
+      return h(
+        'div',
+        null,
+        h(
+          'div',
+          { className: 'org-minihead' },
+          h('b', null, monthTitle(cursor)),
+          h('span', null, `W${weekNumber(selected ?? today)}`),
+        ),
+        h(
+          'div',
+          { className: 'org-mini' },
+          ...weekdayHeads().map((name) => h('div', { className: 'h', key: name }, name)),
+          ...cells.map((cell) => {
+            const count = marks.get(cell.date) ?? 0;
+            const classes = [
+              cell.inMonth ? '' : 'out',
+              cell.date === today ? 'today' : '',
+              cell.date === selected ? 'sel' : '',
+              cell.date === selected ? 'week' : '',
+            ].filter(Boolean).join(' ');
+            return h(
+              'button',
+              {
+                key: cell.date,
+                type: 'button',
+                className: classes,
+                onClick: () => onPick(cell.date),
+                title: dayShort(cell.date),
+              },
+              String(Number(cell.date.slice(8, 10))),
+              count ? h('i') : null,
+            );
+          }),
+        ),
+      );
+    }
+
+    function UpNext({ items, t, onSelect }) {
+      return h(
+        'div',
+        { className: 'org-upnext' },
+        h('h4', null, t('upNext')),
+        ...(items.length
+          ? items.map((item) =>
+              h(
+                'button',
+                { type: 'button', className: 'org-nrow', key: item.key, onClick: () => onSelect(item.ref) },
+                h('span', { className: `d ${item.kind}` }),
+                h('span', null, h('span', { className: 'w' }, item.when), h('span', { className: 'n' }, item.title)),
+              ),
+            )
+          : [h('p', { className: 'org-muted', style: { padding: '0 2px' } }, t('nothingUpcoming'))]),
+      );
+    }
+
+    function WeekGrid({ days, zone, today, nowMin, eventsByDay, plansByDay, automationsByDay, selected, t, onPickDay, onSlot, onSelect }) {
+      const topFor = (minutes) => ((minutes - GRID_START * 60) / 60) * GRID_HOUR;
+      const label = (minutes) => `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`;
+
+      const allDay = (date) => [
+        ...(eventsByDay.get(date) ?? [])
+          .filter((event) => event.allDay)
+          .map((event) => ({ key: event.id ?? `${event.start}`, kind: 'event', title: event.title, color: calendarColor(event.calendar) })),
+        ...(plansByDay.get(date) ?? [])
+          .filter((plan) => !plan.time)
+          .map((plan) => ({ key: plan.id, kind: 'plan', title: plan.title })),
+      ];
+
+      const timed = (date) => {
+        const items = [];
+        for (const event of eventsByDay.get(date) ?? []) {
+          if (event.allDay) continue;
+          const start = minutesOf(event.start, zone);
+          const end = event.end ? minutesOf(event.end, zone) : start === null ? null : start + 30;
+          if (start === null || end === null) continue;
+          items.push({
+            key: event.id ?? event.start,
+            kind: 'event',
+            start,
+            end: Math.max(end, start + 15),
+            title: event.title,
+            time: `${label(start)} – ${label(end)}`,
+            color: calendarColor(event.calendar),
+            ref: { kind: 'event', id: event.id, data: event },
+          });
+        }
+        for (const plan of plansByDay.get(date) ?? []) {
+          if (!plan.time) continue;
+          const [hour, minute] = plan.time.split(':').map(Number);
+          const start = hour * 60 + minute;
+          items.push({
+            key: plan.id,
+            kind: 'plan',
+            start,
+            end: start + 30,
+            title: plan.title,
+            time: plan.time,
+            done: plan.status === 'done',
+            ref: { kind: 'plan', id: plan.id, data: plan },
+          });
+        }
+        for (const task of automationsByDay.get(date) ?? []) {
+          const start = minutesOf(task.scheduledAt, zone);
+          if (start === null) continue;
+          items.push({
+            key: task.id,
+            kind: 'auto',
+            start,
+            end: start + 20,
+            title: task.title,
+            time: label(start),
+            ref: { kind: 'auto', id: task.id, data: task },
+          });
+        }
+        items.sort((a, b) => a.start - b.start || a.end - b.end);
+        return packLanes(items);
+      };
+
+      const hourLabels = [];
+      for (let hour = GRID_START; hour < GRID_END; hour += 1) hourLabels.push(hour);
+
+      return h(
+        'div',
+        { className: 'org-gridwrap' },
+        h(
+          'div',
+          { className: 'org-ghead' },
+          h('div', { className: 'gut' }),
+          ...days.map((date) =>
+            h(
+              'button',
+              { type: 'button', key: date, className: `org-gday${date === today ? ' today' : ''}`, onClick: () => onPickDay(date) },
+              h('span', { className: 'nm' }, new Intl.DateTimeFormat(undefined, { timeZone: 'UTC', weekday: 'short' }).format(new Date(`${date}T12:00:00Z`))),
+              h('span', { className: 'nu' }, String(Number(date.slice(8, 10)))),
+            ),
+          ),
+        ),
+        h(
+          'div',
+          { className: 'org-gall' },
+          h('div', { className: 'gut' }, t('allDayLabel')),
+          ...days.map((date) =>
+            h(
+              'div',
+              { className: 'org-adcol', key: `ad-${date}` },
+              ...allDay(date).map((item) =>
+                h(
+                  'span',
+                  { className: `org-chip ${item.kind}`, key: item.key, style: item.color ? { '--org-ev': item.color } : undefined, title: item.title },
+                  item.title,
+                ),
+              ),
+            ),
+          ),
+        ),
+        h(
+          'div',
+          { className: 'org-gbody' },
+          h(
+            'div',
+            { className: 'org-hgut' },
+            ...hourLabels.map((hour) => h('span', { key: hour, style: { top: `${topFor(hour * 60) + 1}px` } }, `${String(hour).padStart(2, '0')}:00`)),
+          ),
+          ...days.map((date) => {
+            const { placed, lanes } = timed(date);
+            const width = 100 / lanes;
+            return h(
+              'div',
+              {
+                className: `org-gcol${date === today ? ' today' : ''}`,
+                key: `col-${date}`,
+                onClick: (event) => {
+                  const rect = event.currentTarget.getBoundingClientRect();
+                  const offset = event.clientY - rect.top;
+                  const raw = GRID_START * 60 + Math.round((offset / GRID_HOUR) * 4) * 15;
+                  const minutes = Math.max(GRID_START * 60, Math.min(GRID_END * 60 - 15, raw));
+                  onSlot(date, label(minutes));
+                },
+              },
+              ...placed.map((block) => {
+                const style = {
+                  top: `${topFor(block.start) + 2}px`,
+                  height: `${Math.max(18, topFor(block.end) - topFor(block.start) - 4)}px`,
+                  left: `calc(${block.lane * width}% + 2px)`,
+                  width: `calc(${width}% - 4px)`,
+                };
+                if (block.color) style['--org-ev'] = block.color;
+                const chosen = selected && selected.kind === block.kind && selected.id === block.ref.id;
+                const compact = topFor(block.end) - topFor(block.start) < 34;
+                return h(
+                  'button',
+                  {
+                    type: 'button',
+                    key: block.key,
+                    className: `org-block ${block.kind}${block.done ? ' done' : ''}${chosen ? ' sel' : ''}`,
+                    style,
+                    title: `${block.time} ${block.title}`,
+                    onClick: (event) => {
+                      event.stopPropagation();
+                      onSelect(block.ref);
+                    },
+                  },
+                  compact ? null : h('span', { className: 'bt' }, block.time),
+                  h('span', { className: 'bn' }, block.title),
+                );
+              }),
+              date === today && nowMin !== null && nowMin >= GRID_START * 60 && nowMin < GRID_END * 60
+                ? h('div', { className: 'org-nowline', style: { top: `${topFor(nowMin)}px` } }, h('i'), h('span', null, label(nowMin)))
+                : null,
+            );
+          }),
+        ),
+      );
+    }
+
+    function DetailCard({ item, t, zone, onClose, onToggle, onDelete }) {
+      const [confirming, setConfirming] = useState(false);
+      useEffect(() => {
+        if (!confirming) return undefined;
+        const timer = setTimeout(() => setConfirming(false), 4000);
+        return () => clearTimeout(timer);
+      }, [confirming]);
+      if (!item) return null;
+      const data = item.data ?? {};
+      const done = item.kind === 'plan' && data.status === 'done';
+      const color = item.kind === 'event' ? calendarColor(data.calendar) : undefined;
+      const style = color ? { '--org-ev': color } : undefined;
+      let when = '';
+      if (item.kind === 'event') {
+        const day = eventDay({ start: data.start, allDay: data.allDay }, zone);
+        const start = data.allDay ? t('allDayLabel') : clock(data.start, zone);
+        const end = data.allDay || !data.end ? '' : ` – ${clock(data.end, zone)}`;
+        when = `${day ? dayShort(day) : ''} · ${start}${end}`;
+      } else if (item.kind === 'plan') {
+        when = `${data.date ? dayShort(data.date) : ''} · ${data.time ?? t('allDayLabel')}`;
+      } else {
+        const day = data.scheduledAt ? eventDay({ start: data.scheduledAt }, zone) : null;
+        when = `${day ? dayShort(day) : ''} · ${data.scheduledAt ? clock(data.scheduledAt, zone) : ''}`;
+      }
+      return h(
+        'div',
+        { className: 'org-dcard', style },
+        h(
+          'div',
+          { className: 'org-dkind' },
+          h('span', null, item.kind === 'event' ? t('calendar') : item.kind === 'plan' ? t('plans') : t('automations')),
+          h('button', { type: 'button', className: 'org-dclose', onClick: onClose, 'aria-label': t('dismiss') }, '✕'),
+        ),
+        h('h2', { className: done ? 'struck' : undefined }, data.title ?? ''),
+        h('div', { className: 'org-dwhen' }, when),
+        item.kind === 'plan' && data.status && data.status !== 'open' ? h('div', { className: 'org-drow' }, h('span', { className: 'k' }, 'Status'), h('span', null, data.status)) : null,
+        item.kind === 'event' && data.calendar ? h('div', { className: 'org-drow' }, h('span', { className: 'k' }, t('calendar')), h('span', null, data.calendar)) : null,
+        item.kind === 'event' && data.location ? h('div', { className: 'org-drow' }, h('span', { className: 'k' }, 'Where'), h('span', null, data.location)) : null,
+        item.kind === 'auto' ? h('div', { className: 'org-drow' }, h('span', { className: 'k' }, t('nextRun')), h('span', null, data.recurrence ?? '')) : null,
+        item.kind === 'auto' ? h('p', { className: 'org-muted' }, t('manageInAutomation')) : null,
+        h(
+          'div',
+          { className: 'org-dactions' },
+          item.kind === 'plan'
+            ? h('button', { type: 'button', className: 'org-btn', onClick: () => onToggle(data) }, done ? t('reopen') : t('markDone'))
+            : null,
+          item.kind === 'event'
+            ? h('p', { className: 'org-muted' }, t('connectToEdit'))
+            : h(
+                'button',
+                {
+                  type: 'button',
+                  className: `org-trash${confirming ? ' armed' : ''}`,
+                  title: confirming ? t('confirmDelete') : t('delete'),
+                  'aria-label': confirming ? t('confirmDelete') : t('delete'),
+                  onClick: () => {
+                    if (!confirming) {
+                      setConfirming(true);
+                      return;
+                    }
+                    onDelete(item);
+                  },
+                },
+                h(
+                  'svg',
+                  { width: 14, height: 14, viewBox: '0 0 16 16', fill: 'none', stroke: 'currentColor', strokeWidth: 1.4, 'aria-hidden': 'true' },
+                  h('path', { d: 'M3 4.5h10M6.5 4.5V3h3v1.5M4.6 4.5l.6 8.1h5.6l.6-8.1' }),
+                  h('path', { d: 'M6.8 6.8v3.6M9.2 6.8v3.6', strokeLinecap: 'round' }),
+                ),
+                confirming ? h('span', null, t('confirmDelete')) : null,
+              ),
+        ),
+      );
+    }
+
+    function NoteCard({ value, onChange, state, t, heading }) {
+      return h(
+        'div',
+        { className: 'org-note-wide' },
+        heading ? h('h4', null, heading) : null,
+        h('textarea', { value, placeholder: t('noNoteYet'), onChange: (event) => onChange(event.target.value) }),
+        h(
+          'div',
+          { className: 'org-notefoot' },
+          h(
+            'span',
+            { className: `state${state === 'error' ? ' error' : ''}` },
+            state === 'saving' ? t('saving') : state === 'error' ? t('saveFailed') : state === 'saved' ? t('saved') : '',
+          ),
+          h('span', null, t('onePerDay')),
+        ),
+      );
+    }
+
     function OrganiserPage({ t }) {
       const [view, setView] = useState('day');
       const [today, setToday] = useState(null);
       const [zone, setZone] = useState(null);
       const [selected, setSelected] = useState(null);
       const [cursor, setCursor] = useState(null);
-      const [data, setData] = useState({ plans: [], events: [], notes: [], calendar: { connected: false, error: null } });
+      const [data, setData] = useState({
+        plans: [],
+        events: [],
+        notes: [],
+        automations: [],
+        automationsAvailable: true,
+        automationError: null,
+        calendar: { connected: false, error: null },
+      });
       const [status, setStatus] = useState('loading');
       const [error, setError] = useState(null);
       const [draft, setDraft] = useState(null);
@@ -600,11 +1155,21 @@ window.__ModuleLoader__.load({
       const [query, setQuery] = useState('');
       const [busy, setBusy] = useState(false);
       const [reloadKey, setReloadKey] = useState(0);
+      const [remind, setRemind] = useState(false);
+      const [lead, setLead] = useState(10);
+      const [autoOpen, setAutoOpen] = useState(false);
+      const [autoTitle, setAutoTitle] = useState('');
+      const [autoInstruction, setAutoInstruction] = useState('');
+      const [autoTime, setAutoTime] = useState('09:00');
+      const [autoRepeat, setAutoRepeat] = useState('once');
+      const [toast, setToast] = useState(null);
+      const [selectedItem, setSelectedItem] = useState(null);
+      const [tick, setTick] = useState(0);
 
       const week = useMemo(() => (selected ? weekOf(selected) : []), [selected]);
       const range = useMemo(() => {
         if (!selected) return null;
-        if (view === 'month' && cursor) {
+        if (view !== 'day' && cursor) {
           const cells = monthCells(cursor);
           return { from: cells[0].date, to: cells[41].date };
         }
@@ -624,7 +1189,7 @@ window.__ModuleLoader__.load({
             setZone(payload.zone);
             setSelected((current) => current ?? payload.today);
             setCursor((current) => current ?? payload.today.slice(0, 7));
-            setData((d) => ({ ...d, notes: payload.notes, calendar: payload.calendar }));
+            setData((d) => ({ ...d, notes: payload.notes, calendar: payload.calendar, automations: payload.automations ?? d.automations, automationsAvailable: payload.automationsAvailable !== false }));
             setStatus('ready');
           })
           .catch((cause) => {
@@ -641,12 +1206,12 @@ window.__ModuleLoader__.load({
       useEffect(() => {
         if (!rangeFrom || !rangeTo) return undefined;
         let alive = true;
-        call(`api/organiser?from=${rangeFrom}&to=${rangeTo}`)
+        call(`api/organiser?from=${rangeFrom}&to=${rangeTo}&status=all`)
           .then((payload) => {
             if (!alive) return;
             setZone(payload.zone);
             setToday(payload.today);
-            setData((d) => ({ ...d, plans: payload.plans, events: payload.events, notes: payload.notes, calendar: payload.calendar }));
+            setData((d) => ({ ...d, plans: (payload.plans ?? []).filter((plan) => plan.status !== 'dropped'), events: payload.events, notes: payload.notes, automations: payload.automations ?? [], automationsAvailable: payload.automationsAvailable !== false, calendar: payload.calendar }));
             setError(null);
           })
           .catch((cause) => {
@@ -667,6 +1232,10 @@ window.__ModuleLoader__.load({
         [data.events, zone],
       );
       const plansByDay = useMemo(() => groupByDay(data.plans, (plan) => plan.date), [data.plans]);
+      const automationsByDay = useMemo(
+        () => groupByDay(data.automations, (task) => eventDay({ start: task.scheduledAt }, zone)),
+        [data.automations, zone],
+      );
       const notesByDate = useMemo(() => new Map(data.notes.filter((note) => note.date).map((note) => [note.date, note])), [data.notes]);
 
       const dayNote = selected ? notesByDate.get(selected) ?? null : null;
@@ -716,6 +1285,25 @@ window.__ModuleLoader__.load({
         setView('day');
       }, []);
 
+      const pickDay = useCallback((date) => {
+        setSelected(date);
+        setDraft(null);
+        setDraftDate(date);
+        setNoteState('idle');
+        setSelectedItem(null);
+      }, []);
+
+      /* A click on an empty slot opens the day with the plan form filled in. */
+      const slotClick = useCallback((date, time) => {
+        setSelected(date);
+        setDraft(null);
+        setDraftDate(date);
+        setNewTime(time);
+        setAdding(true);
+        setAutoOpen(false);
+        setView('day');
+      }, []);
+
       const shift = useCallback(
         (direction) => {
           if (view === 'month' && cursor) {
@@ -737,19 +1325,47 @@ window.__ModuleLoader__.load({
         setDraftDate(today);
       }, [today]);
 
-      const completePlan = useCallback(
-        async (id) => {
+      const setPlanState = useCallback(
+        async (id, action) => {
           setBusy(true);
           try {
-            await post('api/organiser/plan', { action: 'done', id });
-            setData((d) => ({ ...d, plans: d.plans.filter((plan) => plan.id !== id) }));
+            const payload = await post('api/organiser/plan', { action, id });
+            setData((d) => ({ ...d, plans: d.plans.map((plan) => (plan.id === id ? payload.plan : plan)) }));
           } catch (cause) {
-            setError(cause.message);
+            setToast(`${t('saveFailed')}: ${cause.message}`);
           } finally {
             setBusy(false);
           }
         },
-        [],
+        [t],
+      );
+
+      const togglePlan = useCallback(
+        (plan) => setPlanState(plan.id, plan.status === 'done' ? 'open' : 'done'),
+        [setPlanState],
+      );
+
+      const deleteItem = useCallback(
+        async (item) => {
+          if (!item) return;
+          try {
+            if (item.kind === 'plan') {
+              await post('api/organiser/plan', { action: 'delete', id: item.id });
+              setData((d) => ({ ...d, plans: d.plans.filter((plan) => plan.id !== item.id) }));
+            } else if (item.kind === 'auto') {
+              await post('api/organiser/automation', { action: 'delete', id: item.id });
+              setReloadKey((key) => key + 1);
+            } else {
+              setToast(t('connectToEdit'));
+              return;
+            }
+            setSelectedItem(null);
+            setToast(t('deleted'));
+          } catch (cause) {
+            setToast(`${t('deleteFailed')}: ${cause.message}`);
+          }
+        },
+        [t],
       );
 
       const submitPlan = useCallback(
@@ -766,8 +1382,27 @@ window.__ModuleLoader__.load({
               title,
             });
             setData((d) => ({ ...d, plans: [...d.plans, payload.plan] }));
+            /* The reminder is a separate Schedule task: the plan stays local, the
+               message is delivered by the Host into a new conversation. */
+            if (remind && newTime) {
+              try {
+                await post('api/organiser/reminder', {
+                  title,
+                  date: selected,
+                  time: newTime,
+                  leadMinutes: lead,
+                  timeZone: zone,
+                });
+                setToast(t('reminderSet'));
+              } catch (cause) {
+                setToast(`${t('scheduleFailed')}: ${cause.message}`);
+              }
+            } else {
+              setToast(t('planSaved'));
+            }
             setNewTitle('');
             setNewTime('');
+            setRemind(false);
             setAdding(false);
           } catch (cause) {
             setError(cause.message);
@@ -775,8 +1410,46 @@ window.__ModuleLoader__.load({
             setBusy(false);
           }
         },
-        [newTitle, newTime, selected],
+        [newTitle, newTime, selected, remind, lead, zone, t],
       );
+
+      const submitAutomation = useCallback(
+        async (event) => {
+          event.preventDefault();
+          const title = autoTitle.trim();
+          const instruction = autoInstruction.trim();
+          if (!title || !instruction || !selected) return;
+          setBusy(true);
+          try {
+            await post('api/organiser/automation', {
+              title,
+              instruction,
+              date: selected,
+              time: autoTime,
+              repeat: autoRepeat,
+              timeZone: zone,
+            });
+            setAutoTitle('');
+            setAutoInstruction('');
+            setAutoRepeat('once');
+            setAutoOpen(false);
+            setToast(t('automationCreated'));
+            setReloadKey((key) => key + 1);
+          } catch (cause) {
+            setToast(`${t('scheduleFailed')}: ${cause.message}`);
+          } finally {
+            setBusy(false);
+          }
+        },
+        [autoTitle, autoInstruction, autoTime, autoRepeat, selected, zone, t],
+      );
+
+      /* A toast is a receipt, not a state: it clears itself. */
+      useEffect(() => {
+        if (!toast) return undefined;
+        const timer = setTimeout(() => setToast(null), 4000);
+        return () => clearTimeout(timer);
+      }, [toast]);
 
       const retry = useCallback(() => {
         setStatus('loading');
@@ -788,7 +1461,7 @@ window.__ModuleLoader__.load({
             setZone(payload.zone);
             setSelected((current) => current ?? payload.today);
             setCursor((current) => current ?? payload.today.slice(0, 7));
-            setData((d) => ({ ...d, notes: payload.notes, calendar: payload.calendar }));
+            setData((d) => ({ ...d, notes: payload.notes, calendar: payload.calendar, automations: payload.automations ?? d.automations, automationsAvailable: payload.automationsAvailable !== false }));
             setStatus('ready');
           })
           .catch((cause) => {
@@ -796,6 +1469,13 @@ window.__ModuleLoader__.load({
             setError(cause.message);
           });
       }, []);
+
+      /* The now line and the "up next" reading follow the clock once a minute. */
+      useEffect(() => {
+        const timer = setInterval(() => setTick((value) => value + 1), 60000);
+        return () => clearInterval(timer);
+      }, []);
+      const nowMin = useMemo(() => minutesOf(new Date().toISOString(), zone), [zone, tick]);
 
       /* The rail: every note, newest day first, inbox after. */
       const railNotes = useMemo(() => {
@@ -807,6 +1487,7 @@ window.__ModuleLoader__.load({
 
       const dayEvents = selected ? (eventsByDay.get(selected) ?? []) : [];
       const dayPlans = selected ? (plansByDay.get(selected) ?? []) : [];
+      const dayAutomations = selected ? (automationsByDay.get(selected) ?? []) : [];
 
       const later = useMemo(() => {
         if (!selected) return [];
@@ -817,12 +1498,81 @@ window.__ModuleLoader__.load({
           const plans = plansByDay.get(date) ?? [];
           const items = [
             ...events.map((event) => ({ kind: 'event', time: event.allDay ? 'all day' : clock(event.start, zone), title: event.title, calendar: event.calendar })),
-            ...plans.map((plan) => ({ kind: 'plan', time: plan.time ?? 'no time', title: plan.title, id: plan.id })),
+            ...plans.filter((plan) => plan.status === 'open').map((plan) => ({ kind: 'plan', time: plan.time ?? 'no time', title: plan.title, id: plan.id })),
           ];
           if (items.length) rows.push({ date, items });
         }
         return rows;
       }, [selected, eventsByDay, plansByDay, zone]);
+
+      /* The detail panel follows the live row, so Done/Reopen show the new state. */
+      const detailItem = useMemo(() => {
+        if (!selectedItem) return null;
+        if (selectedItem.kind === 'plan') {
+          const current = data.plans.find((plan) => plan.id === selectedItem.id);
+          if (current) return { ...selectedItem, data: current };
+        }
+        return selectedItem;
+      }, [selectedItem, data.plans]);
+
+      const monthMarks = useMemo(() => {
+        const marks = new Map();
+        if (!cursor) return marks;
+        for (const cell of monthCells(cursor)) {
+          const count =
+            (eventsByDay.get(cell.date)?.length ?? 0) +
+            (plansByDay.get(cell.date)?.length ?? 0) +
+            (automationsByDay.get(cell.date)?.length ?? 0);
+          if (count) marks.set(cell.date, count);
+        }
+        return marks;
+      }, [cursor, eventsByDay, plansByDay, automationsByDay]);
+
+      const upNext = useMemo(() => {
+        if (!selected) return [];
+        const from = today && today > selected ? today : selected;
+        const items = [];
+        for (let step = 0; step <= 7; step += 1) {
+          const date = addDays(from, step);
+          for (const event of eventsByDay.get(date) ?? []) {
+            items.push({
+              key: `e-${event.id ?? event.start}`,
+              kind: 'event',
+              at: date,
+              start: minutesOf(event.start, zone) ?? 0,
+              when: `${dayShort(date)} · ${event.allDay ? t('allDayLabel') : clock(event.start, zone)}`,
+              title: event.title,
+              ref: { kind: 'event', id: event.id, data: event },
+            });
+          }
+          for (const plan of plansByDay.get(date) ?? []) {
+            if (plan.status !== 'open') continue;
+            const [hour, minute] = (plan.time ?? '00:00').split(':').map(Number);
+            items.push({
+              key: `p-${plan.id}`,
+              kind: 'plan',
+              at: date,
+              start: plan.time ? hour * 60 + minute : 0,
+              when: `${dayShort(date)} · ${plan.time ?? t('allDayLabel')}`,
+              title: plan.title,
+              ref: { kind: 'plan', id: plan.id, data: plan },
+            });
+          }
+          for (const task of automationsByDay.get(date) ?? []) {
+            items.push({
+              key: `a-${task.id}`,
+              kind: 'auto',
+              at: date,
+              start: minutesOf(task.scheduledAt, zone) ?? 0,
+              when: `${dayShort(date)} · ${clock(task.scheduledAt, zone)} ↻`,
+              title: task.title,
+              ref: { kind: 'auto', id: task.id, data: task },
+            });
+          }
+        }
+        items.sort((a, b) => (a.at === b.at ? a.start - b.start : a.at < b.at ? -1 : 1));
+        return items.slice(0, 5);
+      }, [selected, today, eventsByDay, plansByDay, automationsByDay, zone, t]);
 
       if (status === 'loading' && !today) {
         return h('div', { className: 'org-page' }, h('div', { className: 'org-empty' }, t('loading')));
@@ -869,6 +1619,7 @@ window.__ModuleLoader__.load({
                 },
                 t('day'),
               ),
+              h('button', { type: 'button', 'aria-pressed': view === 'week', onClick: () => setView('week') }, t('week')),
               h('button', { type: 'button', 'aria-pressed': view === 'month', onClick: () => setView('month') }, t('month')),
             ),
             h('button', { type: 'button', className: 'org-icon', title: t('previous'), 'aria-label': t('previous'), onClick: () => shift(-1) }, '‹'),
@@ -887,7 +1638,60 @@ window.__ModuleLoader__.load({
             )
           : null,
 
-        view === 'month' && cursor
+        toast ? h('div', { className: 'org-toast', role: 'status' }, toast) : null,
+
+        view === 'week' && cursor
+          ? h(
+              'div',
+              { className: 'org-week' },
+              h(
+                'aside',
+                { className: 'org-side' },
+                h(MiniMonth, { cursor, today, selected, marks: monthMarks, onPick: pickDay, t }),
+                h(UpNext, { items: upNext, t, onSelect: setSelectedItem }),
+              ),
+              h(WeekGrid, {
+                days: week,
+                zone,
+                today,
+                nowMin,
+                t,
+                eventsByDay,
+                plansByDay,
+                automationsByDay,
+                selected: selectedItem,
+                onPickDay: pickDay,
+                onSlot: slotClick,
+                onSelect: setSelectedItem,
+              }),
+              h(
+                'aside',
+                { className: 'org-detail' },
+                detailItem
+                  ? h(DetailCard, {
+                  key: `${detailItem.kind}:${detailItem.id}`,
+                  item: detailItem,
+                  t,
+                  zone,
+                  onClose: () => setSelectedItem(null),
+                  onToggle: togglePlan,
+                  onDelete: deleteItem,
+                })
+                  : null,
+                h(NoteCard, {
+                  value: noteBody,
+                  state: noteState,
+                  t,
+                  heading: `${t('dayNote')} · ${selected ? dayShort(selected) : ''}`,
+                  onChange: (value) => {
+                    setDraftDate(selected);
+                    setDraft(value);
+                    setNoteState('idle');
+                  },
+                }),
+              ),
+            )
+          : view === 'month' && cursor
           ? h(MonthView, {
               cursor,
               today,
@@ -895,6 +1699,7 @@ window.__ModuleLoader__.load({
               t,
               eventsByDay,
               plansByDay,
+              automationsByDay,
               onOpenDay: openDay,
             })
           : h(
@@ -957,7 +1762,7 @@ window.__ModuleLoader__.load({
                   { className: 'org-band' },
                   h('h3', null, t('plans'), h('span', { className: 'meta' }, String(dayPlans.length))),
                   ...(dayPlans.length
-                    ? dayPlans.map((plan) => h(PlanRow, { key: plan.id, plan, onDone: completePlan, t }))
+                    ? dayPlans.map((plan) => h(PlanRow, { key: plan.id, plan, onToggle: togglePlan, t }))
                     : [h('p', { className: 'org-muted' }, t('nothingPlanned'))]),
                   adding
                     ? h(
@@ -984,6 +1789,31 @@ window.__ModuleLoader__.load({
                           'aria-label': t('timePlaceholder'),
                           onChange: (event) => setNewTime(event.target.value),
                         }),
+                        h(
+                          'label',
+                          { className: 'org-remind' },
+                          h('input', {
+                            type: 'checkbox',
+                            checked: remind,
+                            disabled: !newTime,
+                            onChange: (event) => setRemind(event.target.checked),
+                          }),
+                          t('remindMe'),
+                          h(
+                            'select',
+                            {
+                              className: 'org-select',
+                              value: String(lead),
+                              disabled: !remind || !newTime,
+                              'aria-label': t('remindMe'),
+                              onChange: (event) => setLead(Number(event.target.value)),
+                            },
+                            h('option', { value: '0' }, t('atTheTime')),
+                            h('option', { value: '10' }, `10 ${t('minutesBefore')}`),
+                            h('option', { value: '30' }, `30 ${t('minutesBefore')}`),
+                            h('option', { value: '60' }, `60 ${t('minutesBefore')}`),
+                          ),
+                        ),
                         h('button', { type: 'submit', className: 'org-primary', disabled: busy || !newTitle.trim() }, t('add')),
                         h('button', { type: 'button', className: 'org-dashed', onClick: () => { setAdding(false); setNewTitle(''); setNewTime(''); } }, t('cancel')),
                       )
@@ -993,36 +1823,83 @@ window.__ModuleLoader__.load({
                 h(
                   'section',
                   { className: 'org-band' },
+                  h('h3', null, t('automations'), h('span', { className: 'meta' }, String(dayAutomations.length))),
+                  ...(dayAutomations.length
+                    ? dayAutomations.map((task) =>
+                        h(
+                          'div',
+                          { className: 'org-auto', key: task.id },
+                          h('span', { className: 'glyph' }, '↻'),
+                          h('span', { className: 'org-mono' }, clock(task.scheduledAt, zone) || '—'),
+                          h('span', { className: 'title', title: task.title }, task.title),
+                          h('span', { className: 'when' }, task.recurrence),
+                        ),
+                      )
+                    : autoOpen
+                      ? []
+                      : [h('p', { className: 'org-muted' }, data.automationsAvailable === false ? t('automationUnavailable') : t('automationEmpty'))]),
+                  autoOpen
+                    ? h(
+                        'form',
+                        { className: 'org-form', onSubmit: submitAutomation },
+                        h('input', {
+                          className: 'org-input',
+                          value: autoTitle,
+                          placeholder: t('automationName'),
+                          autoFocus: true,
+                          onChange: (event) => setAutoTitle(event.target.value),
+                        }),
+                        h('input', {
+                          className: 'org-input',
+                          value: autoInstruction,
+                          placeholder: t('automationInstruction'),
+                          onChange: (event) => setAutoInstruction(event.target.value),
+                        }),
+                        h(
+                          'div',
+                          { className: 'org-formrow' },
+                          h('input', {
+                            className: 'org-input org-timeinput',
+                            type: 'time',
+                            value: autoTime,
+                            'aria-label': t('timePlaceholder'),
+                            onChange: (event) => setAutoTime(event.target.value),
+                          }),
+                          h(
+                            'select',
+                            {
+                              className: 'org-select',
+                              value: autoRepeat,
+                              'aria-label': t('repeat'),
+                              onChange: (event) => setAutoRepeat(event.target.value),
+                            },
+                            h('option', { value: 'once' }, t('once')),
+                            h('option', { value: 'daily' }, t('daily')),
+                            h('option', { value: 'weekdays' }, t('weekdays')),
+                            h('option', { value: 'weekly' }, t('weekly')),
+                          ),
+                          h('button', { type: 'submit', className: 'org-primary', disabled: busy || !autoTitle.trim() || !autoInstruction.trim() }, t('add')),
+                          h('button', { type: 'button', className: 'org-dashed', onClick: () => { setAutoOpen(false); setAutoTitle(''); setAutoInstruction(''); } }, t('cancel')),
+                        ),
+                        h('p', { className: 'org-hint' }, t('automationHint')),
+                      )
+                    : h('button', { type: 'button', className: 'org-dashed', onClick: () => setAutoOpen(true) }, `+ ${t('newAutomation')}`),
+                ),
+
+                h(
+                  'section',
+                  { className: 'org-band' },
                   h('h3', null, `${t('note')}${selected ? ` · ${dayShort(selected)}` : ''}`),
-                  h(
-                    'div',
-                    { className: 'org-notecard' },
-                    h('textarea', {
-                      value: noteBody,
-                      placeholder: t('noNoteYet'),
-                      onChange: (event) => {
-                        setDraftDate(selected);
-                        setDraft(event.target.value);
-                        setNoteState('idle');
-                      },
-                    }),
-                    h(
-                      'div',
-                      { className: 'org-notefoot' },
-                      h(
-                        'span',
-                        { className: `state${noteState === 'error' ? ' error' : ''}` },
-                        noteState === 'saving'
-                          ? t('saving')
-                          : noteState === 'error'
-                            ? t('saveFailed')
-                            : noteState === 'saved'
-                              ? t('saved')
-                              : '',
-                      ),
-                      h('span', null, t('onePerDay')),
-                    ),
-                  ),
+                  h(NoteCard, {
+                    value: noteBody,
+                    state: noteState,
+                    t,
+                    onChange: (value) => {
+                      setDraftDate(selected);
+                      setDraft(value);
+                      setNoteState('idle');
+                    },
+                  }),
                 ),
 
                 later.length
@@ -1138,6 +2015,10 @@ window.__ModuleLoader__.load({
       inject: ['slots', 'locale'],
       apply,
       __logic: {
+        calendarColor,
+        minutesOf,
+        packLanes,
+        weekNumber,
         addDays,
         startOfWeek,
         weekOf,
