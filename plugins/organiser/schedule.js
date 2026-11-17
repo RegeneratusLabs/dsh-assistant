@@ -12,7 +12,7 @@
  * second reminder loop would be exactly the duplication this plugin avoids.
  */
 import { OrganiserError } from './store.js';
-import { isDate, isTime } from './time.js';
+import { addDays, isDate, isTime } from './time.js';
 
 const MAX_TITLE = 120;
 const MAX_INSTRUCTION = 4000;
@@ -58,11 +58,6 @@ function cleanZone(value) {
   }
 }
 
-/** `date` ± whole days, as YYYY-MM-DD. */
-function shiftDay(date, days) {
-  return new Date(Date.parse(`${date}T00:00:00Z`) + days * 86400000).toISOString().slice(0, 10);
-}
-
 /**
  * Move a local wall time back by `minutes`, carrying into the previous day.
  *
@@ -81,11 +76,11 @@ export function leadTime(date, time, minutes) {
   let day = date;
   while (total < 0) {
     total += 1440;
-    day = shiftDay(day, -1);
+    day = addDays(day, -1);
   }
   while (total >= 1440) {
     total -= 1440;
-    day = shiftDay(day, 1);
+    day = addDays(day, 1);
   }
   const hh = String(Math.floor(total / 60)).padStart(2, '0');
   const mm = String(total % 60).padStart(2, '0');
