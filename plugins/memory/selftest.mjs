@@ -8,7 +8,7 @@
  * Run: node plugins/memory/selftest.mjs
  */
 
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -35,7 +35,7 @@ check('missing profile reads as empty', readProfile(file).profile.user.length ==
 writeProfile(file, { user: ['Based in a coastal town.'], agent: ['Prefers local suppliers.'] });
 const back = readProfile(file).profile;
 check('round-trip keeps both tracks', back.user.length === 1 && back.agent.length === 1, JSON.stringify(back));
-check('file is 0600', (readFileSync(file, { encoding: 'utf8' }) !== ''));
+check('file is 0600', (statSync(file).mode & 0o777) === 0o600, `mode ${(statSync(file).mode & 0o777).toString(8)}`);
 
 const rendered = renderProfile(back);
 check('render includes both headings', rendered.includes('## About the user') && rendered.includes('## Notes to self'));
@@ -103,6 +103,24 @@ globalThis.fetch = async () => {
 };
 const down = await probeHealth(probeConfig);
 check('a daemon that really is down is reported', down === false && healthAttempts === 2, String(healthAttempts));
+// A pre-existing status.json must never freeze stale fields over the resolved
+// config: `...previous` spread after the fresh fields once made every row
+// change (new bank, new URL) invisible and stopped checkedAt advancing.
+const staleHome = mkdtempSync(path.join(os.tmpdir(), 'dsh-stale-selftest-'));
+const staleStatus = path.join(staleHome, 'status.json');
+writeFileSync(
+  staleStatus,
+  JSON.stringify({ version: 1, bank: 'bank-old', apiUrl: 'http://old.invalid', checkedAt: '2020-01-01T00:00:00.000Z' }),
+);
+await probeHealth({ apiUrl: 'http://new.invalid', bankId: 'bank-new', statusPath: staleStatus, timeoutMs: 100, allowBanks: ['bank-new'] });
+const propagated = JSON.parse(readFileSync(staleStatus, 'utf8'));
+check(
+  'a row change propagates into status.json',
+  propagated.bank === 'bank-new' && propagated.apiUrl === 'http://new.invalid',
+  JSON.stringify(propagated),
+);
+check('checkedAt advances past a stale file', Date.parse(propagated.checkedAt) > Date.parse('2020-01-01T00:00:00.000Z'), propagated.checkedAt);
+rmSync(staleHome, { recursive: true, force: true });
 globalThis.fetch = realFetch;
 rmSync(probeHome, { recursive: true, force: true });
 

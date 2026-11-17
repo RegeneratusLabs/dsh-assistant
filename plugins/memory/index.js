@@ -478,8 +478,13 @@ export function hasRetainAlert(config) {
  * @param patch - fields to merge.
  */
 function updateStatus(config, patch) {
+  // `previous` first: a field that already exists in the file must never
+  // freeze a stale value over the freshly resolved config — otherwise a row
+  // change (new bank or URL) would be ignored and `checkedAt` would stop
+  // advancing after the first ever write.
   const previous = readJson(config.statusPath) ?? {};
   writeJson(config.statusPath, {
+    ...previous,
     version: 1,
     bank: config.bankId,
     apiUrl: config.apiUrl,
@@ -488,7 +493,6 @@ function updateStatus(config, patch) {
     userBudget: config.userBudget,
     agentBudget: config.agentBudget,
     checkedAt: new Date().toISOString(),
-    ...previous,
     allowBanks: config.allowBanks,
     denyBanks: config.denyBanks,
     ...patch,
