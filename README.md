@@ -3,14 +3,15 @@
 An assistant profile for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness).
 Everything is a plugin: identity, memory, learning, browsing and connectors.
 
-Early. One profile, five plugins, no channel yet.
+Early. One profile, seven plugins, no channel yet.
 
 ## Requirements
 
 - Node >= 24.9
 - DSH 0.2.2-rc.2: `npm i -g @deepseek-ai/dsh`
 - `pnpm` (DSH's plugin manager uses it)
-- Chrome or Chromium, for the browser plugin
+- Chrome or Chromium, for the browser plugin (the render tier drives the Linux
+  chromium headless shell)
 
 ## Quick start
 
@@ -39,6 +40,7 @@ existing DSH home or the host.
 | `@local/dsh-connectors` | The Connectors page: Gmail, Outlook, Slack, Google Calendar/Drive, Dropbox, Notion, HubSpot, Stripe, QuickBooks, Xero and Shopify with Connect/Disconnect through Composio, plus the live MCP server fleet with probe/restart. The Composio key is saved from the page; a session MCP exposes the connected apps as tools. |
 | `@local/dsh-organiser` | The organiser: Day, Week and Month views over plans, a plain-text note per day and DSH automation tasks, with a colour per calendar and a week grid you can click to create. Reminders ("send me a chat message") and automation tasks are created from the calendar through the Schedule service; a done plan stays visible and struck through, and the trash deletes it. The calendar band reports that no calendar is connected; reading Google Calendar through Connectors is the next step. |
 | `@local/dsh-browse` | The browsing stack. Tier 1 is the host's `web_fetch`; tier 2 is `browse` over the CamoFox server (JS pages, sessions, downloads, captcha stop); tier 3 is `render_html` (chromium printing our own HTML to PDF/PNG at exact millimetres) and `render_view` (same render, but returns the image and a layout check — text past the edge, clipped boxes, sub-15px type, painted-text collisions — in one call). |
+| `dsh-softshell` | The personal surface, shipped as one package. It hides the developer chrome (Trajectory and extra views, the model and access-mode pickers, the agent-preset label, turn/token pills, the per-turn “Edited N files” card, the branch action), puts four everyday starters on the blank screen with the workspace folder beside the attach control, adds a **Sources** pane with inline “read N pages” rows and a per-turn band, reads answers aloud, and adds a `Right now: …` prompt line with `ambient_place` / `ambient_weather`. One bundle switch turns all of it off. |
 
 ## Data and privacy
 

@@ -6,7 +6,7 @@ import path from 'node:path';
 import { buildManifest } from '../lib/paths.mjs';
 import { prepare } from '../lib/setup.mjs';
 
-test('manifest composes base, identity, memory, connectors, the organiser, browser, voice and the plugin index', () => {
+test('manifest composes base, identity, memory, connectors, browser, voice, the plugin index, the organiser and the personal surface', () => {
   const manifest = buildManifest();
   assert.deepEqual(manifest.dsh.profile.bundles, [
     '@deepseek-ai/dsh-base',
@@ -15,6 +15,7 @@ test('manifest composes base, identity, memory, connectors, the organiser, brows
     '@local/dsh-memory',
     '@local/dsh-learn',
     '@local/dsh-connectors',
+    'dsh-softshell',
     '@local/dsh-organiser',
     '@local/dsh-browse',
     '@deepseek-ai/dsh-experimental-voice-input-bundle',
@@ -23,6 +24,8 @@ test('manifest composes base, identity, memory, connectors, the organiser, brows
   assert.match(manifest.dependencies['@local/dsh-browse'], /^link:.+\/plugins\/browse$/);
   assert.match(manifest.dependencies['@local/dsh-connectors'], /^link:.+\/plugins\/connectors$/);
   assert.match(manifest.dependencies['@local/dsh-soul'], /^link:.+\/plugins\/soul$/);
+  assert.match(manifest.dependencies['dsh-softshell'], /^link:.+\/plugins\/softshell$/);
+  assert.match(manifest.dependencies['@local/dsh-organiser'], /^link:.+\/plugins\/organiser$/);
 });
 
 test('voice, the plugin index and auto review are individually optional', () => {

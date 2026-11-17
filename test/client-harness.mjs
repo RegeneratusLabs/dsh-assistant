@@ -2,7 +2,7 @@
 // browser so its pure logic can be asserted. React is stubbed: components are
 // never rendered, only the factory body runs and `__logic` is read back.
 //
-//   const { api } = loadClient('plugins/voice/client.js')
+//   const { api } = loadClient('plugins/softshell/client.js')
 //   assert.equal(api.__logic.speakable('**hi**'), 'hi')
 //
 // The stub is deliberately conservative: anything the artifact touches at load
