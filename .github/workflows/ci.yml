@@ -12,8 +12,8 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '24'
       - name: tests
@@ -27,7 +27,11 @@ jobs:
       - name: no secrets
         run: |
           set -e
+          # Every file type that can carry code or config — the skill scripts
+          # are Python and shell, and HTML/SVG can smuggle strings past a
+          # narrow filter.
           if grep -rInE 'sk-[A-Za-z0-9]{16,}|gho_[A-Za-z0-9]{20,}|BEGIN (RSA |OPENSSH |EC )?PRIVATE KEY' \
-               --include='*.mjs' --include='*.js' --include='*.yml' --include='*.json' --include='*.md' .; then
+               --include='*.mjs' --include='*.js' --include='*.yml' --include='*.json' --include='*.md' \
+               --include='*.py' --include='*.sh' --include='*.html' --include='*.svg' --include='*.txt' .; then
             echo '::error::secret-shaped string found'; exit 1
           fi
