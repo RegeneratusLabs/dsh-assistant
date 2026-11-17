@@ -24,6 +24,12 @@
  *    not fork.
  *  - Every write is auditable and reversible: an audit JSONL entry, a backup of
  *    every replaced skill, and no automatic deletion of a skill.
+ *  - One dim line, never a job: a completed review appends one ignorable
+ *    `plugin:dsh-learn/learned` session record, and the plugin's client half
+ *    draws it as a muted footnote under that turn. A plugin record never
+ *    enters the model-visible surface, and it replaces the old fake job row
+ *    that put a "background job" counter in every session header. Quiet turns
+ *    append nothing at all.
  *
  * @module @local/dsh-learn
  */
@@ -171,6 +177,8 @@ function resolveConfig(raw = {}) {
     maxSkillWritesPerHour: nonNegativeInt(raw.maxSkillWritesPerHour, DEFAULTS.maxSkillWritesPerHour, 10),
     maxSkillWritesPerDay: nonNegativeInt(raw.maxSkillWritesPerDay, DEFAULTS.maxSkillWritesPerDay, 50),
     maxSkills: nonNegativeInt(raw.maxSkills, DEFAULTS.maxSkills, 2000) || DEFAULTS.maxSkills,
+    // Programmatic seam for the self-test; a Loader row cannot express a function.
+    appendRecord: typeof raw.appendRecord === 'function' ? raw.appendRecord : undefined,
   };
 }
 
@@ -362,44 +370,78 @@ function audit(config, entry) {
 }
 
 /**
- * Surface a completed review in the session's existing background-job roster.
- *
- * The learn plugin cannot draw in the transcript without shipping browser code,
- * but the job list is already a Session-owned visual: a settled row with the
- * label and a one-line detail. A job is created only after a review changed
- * something, so quiet turns stay quiet; when no controller serves the session
- * the call fails and learning continues without the notice.
- * @param ctx - Cordis context.
- * @param sessionId - owning session.
- * @param detail - one-line summary.
- * @returns whether the notice was registered.
+ * The session record the client half renders. The type must stay under the
+ * `plugin:` grammar and match `RECORD` in client.js.
  */
-export async function publishNotice(ctx, sessionId, detail) {
-  const registry = typeof ctx.get === 'function' ? ctx.get('jobs') : undefined;
-  if (!registry || typeof registry.start !== 'function') return false;
+export const NOTICE_RECORD = 'plugin:dsh-learn/learned';
+
+/** Resolved once: the Host's own `appendPluginRecord`. */
+let recordAppender;
+
+/**
+ * Resolve `appendPluginRecord` from the Host's session package.
+ *
+ * Shipped packages resolve from the dsh installation, but only a bundle that
+ * declares one as a peer is routed there when it lives outside the profile
+ * (the Loader intercepts this import); the installed copy is the module
+ * instance — and `Session` class — the Host already uses. Plain Node (the
+ * self-test) has no such route, so a miss degrades to audit-only learning.
+ * @returns the appender, or null when this composition cannot record notices.
+ */
+async function appenderForNotices() {
+  if (recordAppender !== undefined) return recordAppender;
   try {
-    await registry.start({
-      kind: 'learn',
-      label: 'Learning review',
-      owner: sessionId,
-      run() {
-        return { cancel() {}, done: Promise.resolve({ status: 'completed', detail }) };
-      },
-    });
-    return true;
+    const module = await import('@deepseek-ai/dsh-session');
+    recordAppender = typeof module.appendPluginRecord === 'function' ? module.appendPluginRecord : null;
+    if (recordAppender === null) warnOnce('notice-record', 'session module has no appendPluginRecord; notices stay audit-only');
   } catch (error) {
-    warnOnce('notice', `learning notice unavailable: ${String((error && error.message) || error).slice(0, 140)}`);
-    return false;
+    recordAppender = null;
+    const detail = (error && (error.code || error.message)) || error;
+    warnOnce('notice-record', `session module unavailable (${String(detail).slice(0, 120)}); notices stay audit-only`);
   }
+  return recordAppender;
 }
 
-/** A one-line, bounded summary of what a review changed. */
-export function summarizeReview(applied) {
-  const parts = [];
-  if (applied.memory.length > 0) parts.push(`${applied.memory.length} memor${applied.memory.length === 1 ? 'y' : 'ies'}`);
-  if (applied.forget > 0) parts.push(`forgot ${applied.forget}`);
-  if (applied.skill) parts.push(`skill ${applied.skill.name}`);
-  return parts.length > 0 ? `Learned ${parts.join(' · ')}`.slice(0, 200) : '';
+/**
+ * The display-only payload for one completed review: counts and a skill name,
+ * never the stored text.
+ * @param turnId - the turn the review observed.
+ * @param applied - what the review wrote.
+ * @returns a small JSON payload.
+ */
+export function learnedNotice(turnId, applied) {
+  return {
+    v: 1,
+    turn: Number.isSafeInteger(turnId) ? turnId : 0,
+    memory: applied.memory.length,
+    forget: applied.forget,
+    skill: applied.skill?.name ?? null,
+  };
+}
+
+/**
+ * Append the notice record after a review changed something.
+ *
+ * A record that cannot be written (the session closed while the auxiliary
+ * model call ran) is dropped: the audit log already holds the change, and a
+ * notice is never worth failing a review over. The appender argument exists so
+ * the self-test can assert the append without a live Host.
+ * @param session - the observed Session.
+ * @param notice - the payload from {@link learnedNotice}.
+ * @param append - optional appender override.
+ * @returns whether a record was committed.
+ */
+export async function recordLearned(session, notice, append) {
+  const writer = append ?? (await appenderForNotices());
+  if (typeof writer !== 'function' || !session) return false;
+  try {
+    writer(session, NOTICE_RECORD, notice);
+    return true;
+  } catch (error) {
+    const detail = String((error && (error.message || error.code)) || error).slice(0, 120);
+    warnOnce(`notice-append:${detail.slice(0, 60)}`, `notice record skipped: ${detail}`);
+    return false;
+  }
 }
 
 /** The semantic write config, or null when Hindsight is not configured. */
@@ -568,8 +610,7 @@ async function review(ctx, turn, config) {
     skill: applied.skill,
     errors: result.errors,
   });
-  const detail = summarizeReview(applied);
-  if (detail) await publishNotice(ctx, turn.sessionId, detail);
+  await recordLearned(turn.session, learnedNotice(turn.turnId, applied), config.appendRecord);
 }
 
 /** Skill names only; the review never needs their bodies. */
@@ -670,7 +711,7 @@ export function observe(ctx, config, session, event) {
     if (!reviewable) return;
     if (!reviewBudgetAllows(config)) return;
     reviewTimes.push(Date.now());
-    const work = review(ctx, { ...turn, sessionId: id }, config).catch((error) => {
+    const work = review(ctx, { ...turn, sessionId: id, session }, config).catch((error) => {
       warnOnce(`review:${String((error && error.message) || error).slice(0, 80)}`, `review failed: ${String((error && error.message) || error)}`);
     });
     inflight.add(work);

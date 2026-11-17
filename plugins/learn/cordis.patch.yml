@@ -1,6 +1,7 @@
 # Bundle patch for the turn reviewer. One Host row observes durable session
 # events, runs one small auxiliary model call after a qualifying turn, and
-# writes only inside $DSH_HOME. A profile's own patch layer may override it:
+# writes only inside $DSH_HOME. Its browser half draws the notice as one dim
+# line under the reviewed turn. A profile's own patch layer may override it:
 #
 #   - id: dsh-learn
 #     config:

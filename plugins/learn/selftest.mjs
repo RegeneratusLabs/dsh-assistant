@@ -12,6 +12,9 @@
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import { loadClient } from '../../test/client-harness.mjs';
 
 const home = mkdtempSync(path.join(os.tmpdir(), 'dsh-learn-selftest-'));
 process.env.DSH_HOME = home;
@@ -26,8 +29,9 @@ const {
   validateReview,
   writeSkill,
   countSkills,
-  summarizeReview,
-  publishNotice,
+  learnedNotice,
+  recordLearned,
+  NOTICE_RECORD,
 } = await import('./index.js');
 
 let failures = 0;
@@ -41,8 +45,8 @@ function check(label, condition, detail = '') {
   console.log(`FAIL ${label}${detail ? ` — ${detail}` : ''}`);
 }
 
-/** A fresh fake Cordis context that records its session listeners. */
-function makeCtx(stream, notices = null) {
+/** A fresh fake Cordis context that records its session listeners and job starts. */
+function makeCtx(stream, jobStarts = null) {
   const handlers = [];
   const ctx = {
     on: (event, handler) => {
@@ -52,7 +56,7 @@ function makeCtx(stream, notices = null) {
     effect: (fn) => fn(),
     llm: { stream },
     get: (service) =>
-      service === 'jobs' && notices ? { start: async (spec) => { notices.push(spec); } } : undefined,
+      service === 'jobs' && jobStarts ? { start: async (spec) => { jobStarts.push(spec); } } : undefined,
   };
   return { ctx, emit: (session, type, data) => handlers.forEach((handler) => handler(session, { type, data })) };
 }
@@ -119,9 +123,17 @@ globalThis.fetch = async () => {
   throw new Error('semantic memory is off; no request expected');
 };
 const calls = [];
-const notices = [];
-const firstCtx = makeCtx(replyingWith({ memory: [{ target: 'user', text: 'Keeps answers under 100 words.' }], forget: [], skill: null }, calls), notices);
-apply(firstCtx.ctx, { minUserChars: 10, minIntervalMs: 0, maxPerHour: 100, provider: 'test', model: 'test' });
+const jobStarts = [];
+const records = [];
+const firstCtx = makeCtx(replyingWith({ memory: [{ target: 'user', text: 'Keeps answers under 100 words.' }], forget: [], skill: null }, calls), jobStarts);
+apply(firstCtx.ctx, {
+  minUserChars: 10,
+  minIntervalMs: 0,
+  maxPerHour: 100,
+  provider: 'test',
+  model: 'test',
+  appendRecord: (session, type, data) => records.push({ session, type, data }),
+});
 turn(firstCtx.emit, session, 'From now on, keep answers under 100 words.');
 await whenIdle();
 
@@ -137,20 +149,30 @@ check('memory entry was written', profile.user.some((entry) => entry.includes('1
 const audit = readFileSync(path.join(home, 'learning', 'audit.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line));
 check('audit records the write', audit.at(-1).memory.length === 1 && audit.at(-1).ok === true);
 check('no network when semantic is off', fetches === 0, String(fetches));
-check('a learning notice job is registered', notices.length === 1 && notices[0].kind === 'learn', JSON.stringify(notices.map((notice) => notice.kind)));
-const noticeOutcome = notices[0] ? await notices[0].run().done : null;
+check('a review registers no background job', jobStarts.length === 0, JSON.stringify(jobStarts.map((job) => job.kind)));
+check('a changed review appends one notice record', records.length === 1, String(records.length));
+check('the notice uses the plugin record type', records[0]?.type === NOTICE_RECORD, String(records[0]?.type));
 check(
-  'the notice carries a one-line summary',
-  noticeOutcome?.status === 'completed' && noticeOutcome.detail.includes('1 memory'),
-  JSON.stringify(noticeOutcome),
+  'the notice carries counts and a turn, not stored text',
+  JSON.stringify(records[0]?.data) === JSON.stringify({ v: 1, turn: 1, memory: 1, forget: 0, skill: null }),
+  JSON.stringify(records[0]?.data),
+);
+check(
+  'the record reaches the session that owned the turn',
+  records[0]?.session === session,
+  String(records[0]?.session?.id),
 );
 
 check(
-  'summarizeReview formats entries and skills',
-  summarizeReview({ memory: [{ target: 'user', text: 'a' }], forget: 1, skill: { name: 'x' } }) === 'Learned 1 memory · forgot 1 · skill x',
+  'learnedNotice counts memories, forgets and the skill',
+  JSON.stringify(learnedNotice(4, { memory: [{}, {}, {}], forget: 2, skill: { name: 'supplier-research' } })) ===
+    JSON.stringify({ v: 1, turn: 4, memory: 3, forget: 2, skill: 'supplier-research' }),
 );
-check('summarizeReview stays empty for a quiet review', summarizeReview({ memory: [], forget: 0, skill: null }) === '');
-check('publishNotice is a no-op without a registry', (await publishNotice({ get: () => undefined }, 's', 'x')) === false);
+const appended = [];
+const appendedOk = await recordLearned({ id: 's' }, { v: 1, turn: 1 }, (target, type, data) => appended.push({ target, type, data }));
+check('recordLearned delegates to the appender', appendedOk === true && appended.length === 1 && appended[0].type === NOTICE_RECORD);
+check('recordLearned swallows a failed append', (await recordLearned({ id: 's' }, { v: 1 }, () => { throw new Error('closed'); })) === false);
+check('recordLearned is a no-op without a session', (await recordLearned(null, { v: 1 }, () => {})) === false);
 
 // ── substantial turns are reviewed even when the human said one line ────────
 check('eight tool calls make a turn substantial', isSubstantialTurn({ tools: Array(8).fill({}), assistantTexts: [] }) === true);
@@ -291,6 +313,114 @@ apply(foreignCtx.ctx, { minUserChars: 10, minIntervalMs: 0, maxPerHour: 100 });
 turn(foreignCtx.emit, session, 'From now on, remember this fact.', 1);
 await whenIdle();
 check('a foreign bank is never written', posted.length === beforeForeign, `${posted.length} vs ${beforeForeign}`);
+
+// ── client half: the dim line under a turn ─────────────────────────────────
+const clientFile = fileURLToPath(new URL('./client.js', import.meta.url));
+const { api: client, registration } = loadClient(clientFile);
+check('the client registers the package id', registration.id === '@local/dsh-learn', String(registration.id));
+check(
+  'the client declares the services it needs',
+  Array.isArray(client.inject) && ['slots', 'sessions', 'locale'].every((service) => client.inject.includes(service)),
+  JSON.stringify(client.inject),
+);
+check(
+  'the client exposes its pure seam',
+  client.__logic && typeof client.__logic.noticeKey === 'function' && typeof client.__logic.formatNotice === 'function',
+);
+
+const logic = client.__logic;
+const payload = { v: 1, turn: 7, memory: 2, forget: 1, skill: 'supplier-research' };
+check(
+  'a valid record becomes a stable key',
+  logic.payloadKey(payload) === logic.payloadKey({ ...payload }),
+);
+check('another record version is ignored', logic.payloadKey({ ...payload, v: 2 }) === '');
+check('a record without a turn is ignored', logic.payloadKey({ ...payload, turn: '7' }) === '');
+check('an empty record is ignored', logic.payloadKey({ v: 1, turn: 1, memory: 0, forget: 0, skill: null }) === '');
+check('negative counts are dropped', logic.payloadKey({ v: 1, turn: 1, memory: -3, forget: 0, skill: null }) === '');
+
+const entries = [
+  { type: 'event', event: { type: 'assistant/message', data: {} } },
+  { type: 'event', event: { type: NOTICE_RECORD, ignorable: true, data: { v: 1, turn: 7, memory: 2, forget: 0, skill: 'x' } } },
+  { type: 'event', event: { type: NOTICE_RECORD, ignorable: true, data: { v: 1, turn: 8, memory: 1, forget: 0, skill: null } } },
+  { type: 'event', event: { type: NOTICE_RECORD, data: { v: 1, turn: 9, memory: 1, forget: 0, skill: null } } },
+];
+const indexed = logic.indexByTurn(entries);
+check('records are indexed by turn', indexed.size === 2 && indexed.has(7) && indexed.has(8), String(indexed.size));
+check('a non-ignorable record is not ours to draw', !indexed.has(9));
+
+const source = {
+  getSnapshot: () => ({ revision: 3, entries }),
+};
+check('the line resolves for its own turn', typeof logic.noticeKey(source, 7) === 'string' && logic.noticeKey(source, 7) !== '');
+check('a turn that learned nothing draws nothing', logic.noticeKey(source, 6) === '');
+check('a non-numeric turn draws nothing', logic.noticeKey(source, '7') === '');
+
+const translate = (key, params) => `${key}:${params?.count ?? params?.name ?? ''}`;
+const parts = logic.formatNotice(logic.noticeKey(source, 7), translate);
+check(
+  'the line reads as counts plus a skill',
+  parts.length === 2 && parts[0].text === 'line.memory.other:2' && parts[1].text === 'line.skill:x',
+  JSON.stringify(parts),
+);
+const single = logic.formatNotice(JSON.stringify({ m: 1, f: 1, s: '' }), translate);
+check(
+  'singular counts use the singular copy',
+  single[0].text === 'line.memory.one:1' && single[1].text === 'line.forget.one:1',
+  JSON.stringify(single),
+);
+
+/** A fake client context, shaped like the Web one for this plugin. */
+function fakeClientContext() {
+  const registrations = [];
+  const dictionaries = {};
+  const ctx = {
+    locale: {
+      register(namespace, dicts) {
+        dictionaries[namespace] = dicts;
+        return () => {};
+      },
+      bind(namespace) {
+        return (key) => dictionaries[namespace]?.en?.[key] ?? key;
+      },
+    },
+    slots: {
+      inject(_slot, callback) {
+        callback();
+      },
+      register(definition, component) {
+        registrations.push({ definition, component });
+        return () => {};
+      },
+    },
+    sessions: {
+      binding: (sessionId) =>
+        sessionId === 'session-1'
+          ? {
+              eventSource: {
+                getSnapshot: () => ({ revision: 3, entries }),
+              },
+            }
+          : undefined,
+    },
+    effect(fn) {
+      fn();
+    },
+  };
+  return { ctx, registrations, dictionaries };
+}
+
+const fake = fakeClientContext();
+client.apply(fake.ctx);
+check('apply registers one turn-tail entry', fake.registrations.length === 1, String(fake.registrations.length));
+const entry = fake.registrations[0];
+check('the entry belongs to the turn tail', entry.definition.name === 'conversation.chat.turnTail', entry.definition.name);
+check('the entry is scoped to the plugin locale', entry.definition.locale === 'dsh-learn', entry.definition.locale);
+check('the dictionaries register in both languages', Boolean(fake.dictionaries['dsh-learn']?.en) && Boolean(fake.dictionaries['dsh-learn']?.zh));
+const face = entry.definition.inject('session-1');
+check('the face resolves the owning session window', face.sourceOf() === undefined || typeof face.sourceOf().getSnapshot === 'function');
+check('the face reads the record for its turn', logic.noticeKey(face.sourceOf(), 7) !== '');
+check('an unknown session has no window', entry.definition.inject('session-9').sourceOf() === undefined);
 
 rmSync(home, { recursive: true, force: true });
 console.log(failures === 0 ? '\nselftest PASS' : `\nselftest FAIL (${failures})`);
