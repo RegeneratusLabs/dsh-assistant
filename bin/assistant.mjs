@@ -21,10 +21,19 @@ function parse(argv) {
   };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
-    if (arg === '--home') opts.home = argv[++i];
-    else if (arg === '--name') opts.name = argv[++i];
-    else if (arg === '--port') opts.port = Number(argv[++i]);
-    else if (arg === '--no-browser') opts.browser = false;
+    const value = () => {
+      const next = argv[i + 1];
+      if (next === undefined || next.startsWith('--')) throw new Error(`option ${arg} needs a value`);
+      i += 1;
+      return next;
+    };
+    if (arg === '--home') opts.home = value();
+    else if (arg === '--name') opts.name = value();
+    else if (arg === '--port') {
+      const raw = value();
+      if (!/^\d+$/.test(raw) || Number(raw) < 1 || Number(raw) > 65535) throw new Error(`option --port needs a number 1-65535, got "${raw}"`);
+      opts.port = Number(raw);
+    } else if (arg === '--no-browser') opts.browser = false;
     else if (arg === '--require-port-free') opts.requirePortFree = true;
     else if (arg === '--help' || arg === '-h') opts.help = true;
     else throw new Error(`unknown option: ${arg}`);
