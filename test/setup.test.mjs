@@ -6,7 +6,7 @@ import path from 'node:path';
 import { buildManifest } from '../lib/paths.mjs';
 import { prepare } from '../lib/setup.mjs';
 
-test('manifest composes base, identity, memory, connectors, browser, voice and the plugin index', () => {
+test('manifest composes base, identity, memory, connectors, the organiser, browser, voice and the plugin index', () => {
   const manifest = buildManifest();
   assert.deepEqual(manifest.dsh.profile.bundles, [
     '@deepseek-ai/dsh-base',
@@ -15,6 +15,7 @@ test('manifest composes base, identity, memory, connectors, browser, voice and t
     '@local/dsh-memory',
     '@local/dsh-learn',
     '@local/dsh-connectors',
+    '@local/dsh-organiser',
     '@local/dsh-browse',
     '@deepseek-ai/dsh-experimental-voice-input-bundle',
     '@deepseek-ai/dsh-experimental-plugin-market-bundle',

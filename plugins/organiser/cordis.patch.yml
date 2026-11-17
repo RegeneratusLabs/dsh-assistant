@@ -1,0 +1,12 @@
+# The organiser's bundle patch: one Host row.
+#
+# A profile's own patch layer may override the row by id:
+#
+#   - id: dsh-organiser
+#     config:
+#       dataDir: ~/organiser                 # default: $DSH_HOME/calendar
+#       dbPath: ""                          # default: <dataDir>/plans.db
+#       timeZone: Europe/Berlin              # default: the ambient profile's zone, else the system's
+- insert:
+    - id: dsh-organiser
+      name: '@local/dsh-organiser'
