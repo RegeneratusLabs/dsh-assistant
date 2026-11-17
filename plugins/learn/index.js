@@ -354,7 +354,11 @@ export function writeSkill({ dir, name, description, body, keep = 5 }) {
     }
   }
   const text = `---\nname: ${name}\ndescription: ${description}\n---\n\n${body.trim()}\n`;
-  writeFileSync(file, text, { mode: 0o600 });
+  // Temp-then-rename like every other store in this repo: a crash mid-write
+  // would otherwise corrupt the skill, and a first write has no backup.
+  const temp = `${file}.${process.pid}.tmp`;
+  writeFileSync(temp, text, { mode: 0o600 });
+  renameSync(temp, file);
   return { file, backup };
 }
 
@@ -669,7 +673,10 @@ export function observe(ctx, config, session, event) {
 
     if (type === 'turn/start') {
       turns.set(id, blankTurn(data.turn ?? 0));
-      if (turns.size > 500) turns.clear();
+      // Evict the oldest buffered session rather than clearing the map: a
+      // blanket clear would drop every in-flight turn too, including the
+      // sessions a review is about to read.
+      if (turns.size > 500) turns.delete(turns.keys().next().value);
       return;
     }
     const turn = turns.get(id);

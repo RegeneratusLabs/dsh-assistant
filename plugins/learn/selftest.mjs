@@ -418,7 +418,7 @@ check('the entry belongs to the turn tail', entry.definition.name === 'conversat
 check('the entry is scoped to the plugin locale', entry.definition.locale === 'dsh-learn', entry.definition.locale);
 check('the dictionaries register in both languages', Boolean(fake.dictionaries['dsh-learn']?.en) && Boolean(fake.dictionaries['dsh-learn']?.zh));
 const face = entry.definition.inject('session-1');
-check('the face resolves the owning session window', face.sourceOf() === undefined || typeof face.sourceOf().getSnapshot === 'function');
+check('the face resolves the owning session window', face.sourceOf() !== undefined && typeof face.sourceOf().getSnapshot === 'function');
 check('the face reads the record for its turn', logic.noticeKey(face.sourceOf(), 7) !== '');
 check('an unknown session has no window', entry.definition.inject('session-9').sourceOf() === undefined);
 
