@@ -292,6 +292,26 @@ assert.match(nested.message, /Rendered/);
 assert.ok(existsSync(path.join(artDir, 'nested', 'deep.png')), 'a relative png lands under the output dir');
 pass('download and render destinations are confined to the output dir');
 
+// ── concurrent calls with the same tab key share one server tab ─────────────
+let raceCreates = 0;
+const slowClient = {
+  createTab: async () => {
+    raceCreates += 1;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    return { ok: true, status: 200, data: { tabId: 'tab-race' } };
+  },
+  navigate: async () => ({ ok: true, status: 200, data: {} }),
+  snapshot: async () => ({ ok: true, status: 200, data: { snapshot: '- heading "Example" [e1]' } }),
+};
+const raceTool = buildTools({ ...resolved, outputDir: path.join(ROOT, 'out') }, { client: slowClient }).find((tool) => tool.name === 'browse');
+const raceExec = { agent: { session: { id: 'race' } } };
+await Promise.all([
+  raceTool.execute({ action: 'open', url: 'https://example.org/a' }, raceExec),
+  raceTool.execute({ action: 'open', url: 'https://example.org/b' }, raceExec),
+]);
+assert.equal(raceCreates, 1, 'two concurrent opens create one server tab');
+pass('concurrent opens share one in-flight tab creation');
+
 server.close();
 rmSync(ROOT, { recursive: true, force: true });
 process.stdout.write('OK dsh-browse selftest\n');

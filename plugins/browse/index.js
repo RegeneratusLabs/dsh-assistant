@@ -336,21 +336,44 @@ export function buildTools(config, deps = {}) {
   const client = deps.client ?? new CamofoxClient({ baseUrl: config.camofoxUrl, timeoutMs: config.requestTimeoutMs });
   const spawnImpl = deps.spawnImpl ?? spawn;
   const now = deps.clock ?? (() => Date.now());
-  /** tabKey -> tabId, one live tab per conversation (or per explicit `tab`). */
+  /**
+   * tabKey -> tabId | Promise<tabId>. One live tab per conversation (or per
+   * explicit `tab`); the value is a promise only while creation is in flight,
+   * so concurrent calls with the same key share one server tab instead of
+   * leaking the loser's.
+   */
   const tabs = new Map();
+  /** Upper bound on remembered tabs; a long-lived host meets more conversations than one browser needs. */
+  const MAX_TABS = 64;
 
   async function ensureTab(exec, tabName) {
     const key = tabKeyFor(exec, tabName);
     const existing = tabs.get(key);
     if (existing) return existing;
-    const sessionKey = key.replace(/^[a-z]+:/, '').slice(0, 64) || 'default';
-    const created = await client.createTab(config.userId, sessionKey);
-    const tabId = created.data?.tabId;
-    if (!created.ok || typeof tabId !== 'string') {
-      throw new Error(`could not open a browser tab (HTTP ${created.status}): ${JSON.stringify(created.data).slice(0, 200)}`);
+    const creating = (async () => {
+      const sessionKey = key.replace(/^[a-z]+:/, '').slice(0, 64) || 'default';
+      const created = await client.createTab(config.userId, sessionKey);
+      const tabId = created.data?.tabId;
+      if (!created.ok || typeof tabId !== 'string') {
+        throw new Error(`could not open a browser tab (HTTP ${created.status}): ${JSON.stringify(created.data).slice(0, 200)}`);
+      }
+      return tabId;
+    })();
+    tabs.set(key, creating);
+    // A failed create is evicted so the next call retries instead of caching
+    // the rejection forever.
+    creating.catch(() => tabs.delete(key));
+    // Evict the oldest remembered tab, closing it server-side best effort,
+    // rather than growing without bound across conversations.
+    while (tabs.size > MAX_TABS) {
+      const oldestKey = tabs.keys().next().value;
+      const oldest = tabs.get(oldestKey);
+      tabs.delete(oldestKey);
+      Promise.resolve(oldest)
+        .then((id) => client.closeTab(config.userId, id).catch(() => undefined))
+        .catch(() => undefined);
     }
-    tabs.set(key, tabId);
-    return tabId;
+    return creating;
   }
 
   /** Read title + text of the current page, for challenge detection. */
@@ -487,9 +510,10 @@ export function buildTools(config, deps = {}) {
         }
         if (action === 'close') {
           const key = tabKeyFor(exec, args.tab);
-          const tabId = tabs.get(key);
-          if (!tabId) return { message: 'No tab to close.' };
-          await client.closeTab(config.userId, tabId).catch(() => undefined);
+          const entry = tabs.get(key);
+          if (!entry) return { message: 'No tab to close.' };
+          const tabId = typeof entry === 'string' ? entry : await entry.catch(() => undefined);
+          if (tabId) await client.closeTab(config.userId, tabId).catch(() => undefined);
           tabs.delete(key);
           return { message: 'Tab closed.' };
         }
