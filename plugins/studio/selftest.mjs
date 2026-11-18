@@ -10,10 +10,12 @@
  * scripts. The Phase 1 page is checked the same way: the works store's
  * validation and modes, the tool's plain-error discipline, the routes the page
  * reads, and the client registrations — loaded through the shared harness, so
- * only the pure parts run.
+ * only the pure parts run. Phase 2 adds the brief-to-draft loop: the prefilled
+ * conversation prompts, the preview/export routes (hermetic: no chrome spawn),
+ * the overlay and download flow, and locale parity for every new string.
  */
 import assert from 'node:assert/strict';
-import fs, { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import fs, { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -147,8 +149,9 @@ assert.equal(manifest.dsh?.client?.immediately, true);
 assert.ok(Array.isArray(manifest.dsh?.client?.inject), 'dsh.client needs an inject list');
 assert.ok(
   manifest.dsh.client.inject.includes('@deepseek-ai/dsh-client-ui-sidebar') &&
-    manifest.dsh.client.inject.includes('@deepseek-ai/dsh-client-ui-layout'),
-  `the page needs the sidebar and layout rows, not ${manifest.dsh.client.inject.join(', ')}`,
+    manifest.dsh.client.inject.includes('@deepseek-ai/dsh-client-ui-layout') &&
+    manifest.dsh.client.inject.includes('@deepseek-ai/dsh-client-ui-workspace'),
+  `the page needs the sidebar, layout and workspace rows, not ${manifest.dsh.client.inject.join(', ')}`,
 );
 assert.deepEqual(
   Object.keys(manifest.dependencies ?? {}).sort(),
@@ -164,7 +167,7 @@ assert.match(patch, /name: '@local\/dsh-studio'/);
 pass('patch: skill row first, the package row second');
 
 const upstream = ['guizang', '歸藏', 'media-desk', 'woniuniuniu', 'op7418', 'nexu-io', 'opendesign'];
-for (const file of ['index.js', 'store.js', 'tools.js', 'client.js']) {
+for (const file of ['index.js', 'store.js', 'tools.js', 'export.js', 'client.js']) {
   const body = read(file);
   assert.ok(body.length > 3000, `${file} looks truncated`);
   assert.ok(!cjk.test(body), `${file} must be English only`);
@@ -182,6 +185,8 @@ assert.match(client, /ctx\.slots\.inject\('sidebar\.panellist'/);
 assert.match(client, /ctx\.slots\.inject\('main'/);
 assert.match(client, /ctx\.locale\.register\(NS, \{ en \}\)/);
 assert.match(client, /api\/studio/);
+assert.match(client, /ctx\.slots\.register/);
+assert.ok(client.includes('uiWorkspace'), 'the page must ask the Workspace service for its prefilled conversation');
 pass('client: no primitives, no body writes, panel + page registered through the locale service');
 
 // One palette only: a colour literal may appear as a var() fallback, so a
@@ -216,6 +221,8 @@ assert.match(storeBody, /0o700/, 'the store must create private directories');
 assert.match(storeBody, /0o600/, 'the store must write a private library file');
 assert.match(indexBody, /connection\.fetch\.register/);
 assert.match(indexBody, /\/api\/studio/);
+assert.match(indexBody, /\/api\/studio\/preview/);
+assert.match(indexBody, /\/api\/studio\/export/);
 assert.match(indexBody, /ctx\.tools\.register/);
 pass('host: $DSH_HOME/studio paths, 0700/0600 guards, one tool and the page routes');
 
@@ -326,6 +333,10 @@ pass('tool: add/update/list/remove answer in plain sentences, refusals included'
 
 /* ── the routes the page reads ───────────────────────────────────────────── */
 
+// The export route needs a browser to render; pointing the row at a path that
+// does not exist keeps this test hermetic — every export request below stops at
+// "no browser found" before any process is spawned.
+const missingChrome = path.join(home, 'no-browsers', 'chrome-headless-shell');
 const routes = [];
 const registered = [];
 const disposers = [];
@@ -334,8 +345,11 @@ const ctx = {
   connection: { fetch: { register: async (route) => { routes.push(route); return async () => {}; } } },
   effect: (fn) => { disposers.push(fn()); },
 };
-await apply(ctx, {});
-assert.deepEqual(routes.map((route) => route.path).sort(), ['/api/studio', '/api/studio/thumb']);
+await apply(ctx, { chromeBinary: missingChrome });
+assert.deepEqual(
+  routes.map((route) => route.path).sort(),
+  ['/api/studio', '/api/studio/export', '/api/studio/preview', '/api/studio/thumb'],
+);
 assert.deepEqual(registered.map((definition) => definition.name), ['studio_library']);
 
 const listRoute = routes.find((route) => route.path === '/api/studio');
@@ -372,6 +386,172 @@ try {
   // meaningless there, but any other failure is real.
   if (!['EPERM', 'EACCES', 'ENOSYS'].includes(error?.code)) throw error;
 }
+
+/* ── Phase 2: preview and export ─────────────────────────────────────────── */
+
+const {
+  buildExportArgs,
+  exportFilename,
+  exportResponse,
+  findChromeBinary,
+  MAX_PREVIEW_BYTES,
+  resolveChrome,
+} = await import('./export.js');
+
+// The browser detection is duplicated from the browse plugin on purpose, so it
+// is pinned here: an empty cache yields '', a configured binary wins, and a
+// blank value falls back to detection.
+const emptyBrowsers = path.join(home, 'no-browsers');
+mkdirSync(emptyBrowsers, { recursive: true });
+assert.equal(findChromeBinary(emptyBrowsers), '', 'an empty cache finds no browser');
+assert.equal(resolveChrome({}, emptyBrowsers), '', 'empty config means auto-detect');
+assert.equal(resolveChrome({ chromeBinary: '  /opt/chrome  ' }, emptyBrowsers), '/opt/chrome', 'config wins, trimmed');
+
+// A configured path that names a directory (the empty detection dir) is still
+// "no browser found": it is refused before any spawn, as a named StudioError.
+const dirBrowserHtml = path.join(home, 'dir-browser.html');
+writeFileSync(dirBrowserHtml, '<!doctype html><title>Dir browser</title>', { mode: 0o600 });
+const dirBrowserWork = store.addWork({ path: dirBrowserHtml, title: 'Dir browser', module: 'web' });
+const dirBrowserError = await exportResponse(
+  store,
+  { url: `/api/studio/export?id=${dirBrowserWork.work.id}&format=png` },
+  emptyBrowsers,
+).then(
+  () => null,
+  (error) => error,
+);
+assert.ok(dirBrowserError instanceof StudioError, 'an empty browser directory is a named refusal');
+assert.equal(dirBrowserError.code, 'no_browser');
+assert.equal(dirBrowserError.status, 503);
+
+// The exact argv for each format, as a pure function: the selftest never
+// spawns a browser, so this is where the flags are actually pinned.
+const commonFlags = [
+  '--no-sandbox',
+  '--disable-gpu',
+  '--disable-dev-shm-usage',
+  '--disable-crash-reporter',
+  '--no-first-run',
+  '--disable-extensions',
+  '--virtual-time-budget=5000',
+  '--run-all-compositor-stages-before-draw',
+];
+const argsFor = (format, file = '/tmp/example.html', output = `/tmp/example.${format}`) =>
+  buildExportArgs({ chrome: '/opt/chrome', file, output, format });
+assert.deepEqual(argsFor('png'), [
+  '/opt/chrome',
+  ...commonFlags,
+  '--hide-scrollbars',
+  '--window-size=1920,1080',
+  '--force-device-scale-factor=1',
+  '--screenshot=/tmp/example.png',
+  'file:///tmp/example.html',
+]);
+assert.deepEqual(argsFor('pdf'), [
+  '/opt/chrome',
+  ...commonFlags,
+  '--no-pdf-header-footer',
+  '--print-to-pdf=/tmp/example.pdf',
+  'file:///tmp/example.html',
+]);
+assert.ok(argsFor('png', path.join(home, 'a b.html')).at(-1).endsWith('a%20b.html'), 'the file URL escapes spaces');
+assert.throws(() => argsFor('gif'), /not an export format/, 'an unknown format is named');
+assert.throws(() => buildExportArgs({ chrome: '', file: '/tmp/x.html', output: '/tmp/x.png', format: 'png' }), /No browser found/);
+
+// A download name cannot smuggle a quote, a newline or a path separator into
+// the response header.
+const downloadName = exportFilename({ title: 'Draft: "poster" / v2' }, 'png');
+assert.match(downloadName, /^[A-Za-z0-9 ._-]+\.png$/, `download name is sanitized: ${downloadName}`);
+assert.ok(!/["/\r\n]/.test(downloadName));
+assert.equal(exportFilename({ title: '···' }, 'pdf'), 'studio-work.pdf', 'an unusable title falls back');
+
+// Preview: the library row is the allowlist, and the bytes are served under a
+// policy that cannot reach the Host page framing them.
+const draftHtml = path.join(home, 'pages', 'draft.html');
+mkdirSync(path.dirname(draftHtml), { recursive: true, mode: 0o700 });
+writeFileSync(draftHtml, '<!doctype html><title>Draft</title><h1>Draft</h1>', { mode: 0o600 });
+const draftRegistered = await homeTool.execute({ action: 'add', path: draftHtml, title: 'Draft poster', module: 'web', theme: 'Editorial' });
+const draftId = /WORK-\d+/.exec(draftRegistered.message)[0];
+
+const previewRoute = routes.find((route) => route.path === '/api/studio/preview');
+const previewed = await previewRoute.fetch({ url: `/api/studio/preview?id=${draftId}`, signal: undefined });
+assert.equal(previewed.status, 200);
+assert.equal(previewed.headers.get('content-type'), 'text/html; charset=utf-8');
+assert.equal(previewed.headers.get('content-security-policy'), 'sandbox allow-scripts');
+assert.equal(previewed.headers.get('x-content-type-options'), 'nosniff');
+assert.equal(previewed.headers.get('cache-control'), 'no-store');
+assert.match(await previewed.text(), /<h1>Draft<\/h1>/, 'the preview is the registered artifact');
+
+const unknownPreview = await previewRoute.fetch({ url: '/api/studio/preview?id=WORK-404', signal: undefined });
+assert.equal(unknownPreview.status, 404);
+assert.match((await unknownPreview.json()).error, /^no work WORK-404$/);
+const noId = await previewRoute.fetch({ url: '/api/studio/preview', signal: undefined });
+assert.equal(noId.status, 400);
+assert.match((await noId.json()).error, /a work id is required/);
+
+const loopHtml = await homeTool.execute({ action: 'add', path: path.join(home, 'motion', 'loop.mp4'), title: 'Loop', module: 'motion' });
+const loopId = /WORK-\d+/.exec(loopHtml.message)[0];
+const notHtml = await previewRoute.fetch({ url: `/api/studio/preview?id=${loopId}`, signal: undefined });
+assert.equal(notHtml.status, 415);
+assert.match((await notHtml.json()).error, /is not an HTML page/);
+
+const goneHtml = await homeTool.execute({ action: 'add', path: path.join(home, 'pages', 'gone.html'), title: 'Gone', module: 'web' });
+const goneId = /WORK-\d+/.exec(goneHtml.message)[0];
+const missing = await previewRoute.fetch({ url: `/api/studio/preview?id=${goneId}`, signal: undefined });
+assert.equal(missing.status, 404);
+assert.match((await missing.json()).error, /is not there any more/);
+
+try {
+  const realHtml = path.join(home, 'real.html');
+  writeFileSync(realHtml, '<!doctype html><title>Linked</title>', { mode: 0o600 });
+  const linkedHtml = path.join(home, 'pages', 'linked.html');
+  symlinkSync(realHtml, linkedHtml);
+  const linkedWork = await homeTool.execute({ action: 'add', path: linkedHtml, title: 'Linked', module: 'web' });
+  const linkedId = /WORK-\d+/.exec(linkedWork.message)[0];
+  const linked = await previewRoute.fetch({ url: `/api/studio/preview?id=${linkedId}`, signal: undefined });
+  assert.equal(linked.status, 415, 'a symlink is not the delivered file');
+  assert.match((await linked.json()).error, /is not a regular file/);
+} catch (error) {
+  // Windows without developer mode cannot create a symlink; the check is
+  // meaningless there, but any other failure is real.
+  if (!['EPERM', 'EACCES', 'ENOSYS'].includes(error?.code)) throw error;
+}
+
+const bigHtml = path.join(home, 'pages', 'big.html');
+writeFileSync(bigHtml, '', { mode: 0o600 });
+truncateSync(bigHtml, MAX_PREVIEW_BYTES + 1);
+const bigWork = await homeTool.execute({ action: 'add', path: bigHtml, title: 'Big', module: 'web' });
+const bigId = /WORK-\d+/.exec(bigWork.message)[0];
+const tooBig = await previewRoute.fetch({ url: `/api/studio/preview?id=${bigId}`, signal: undefined });
+assert.equal(tooBig.status, 413, 'the preview size cap is enforced');
+assert.match((await tooBig.json()).error, /previews stop at 8 MB/);
+
+// Export: a bad format is named before anything else, and a missing browser is
+// a sentence rather than a spawn. No request below can start a child process.
+const exportRoute = routes.find((route) => route.path === '/api/studio/export');
+const badFormat = await exportRoute.fetch({ url: `/api/studio/export?id=${draftId}&format=gif`, signal: undefined });
+assert.equal(badFormat.status, 400);
+assert.match((await badFormat.json()).error, /is not an export format; use png or pdf/);
+const noFormat = await exportRoute.fetch({ url: `/api/studio/export?id=${draftId}`, signal: undefined });
+assert.equal(noFormat.status, 400);
+assert.match((await noFormat.json()).error, /no format/);
+
+for (const format of ['png', 'pdf']) {
+  const noBrowser = await exportRoute.fetch({ url: `/api/studio/export?id=${draftId}&format=${format}`, signal: undefined });
+  assert.equal(noBrowser.status, 503, `${format} stops before spawning when no browser is configured`);
+  assert.match((await noBrowser.json()).error, /^No browser found to render this work/);
+}
+const exportUnknown = await exportRoute.fetch({ url: '/api/studio/export?id=WORK-404&format=png', signal: undefined });
+assert.equal(exportUnknown.status, 404, 'export resolves the work before rendering');
+
+// A refused export validates before touching the disk: if the directory exists
+// at all, it is empty and private, and no browser was ever started.
+const exportDir = path.join(home, 'studio', 'exports');
+if (existsSync(exportDir)) {
+  assert.equal(statSync(exportDir).mode & 0o777, 0o700, 'the export directory is private');
+  assert.deepEqual(readdirSync(exportDir), [], 'a refused export leaves no output behind');
+}
+pass('P2 routes: preview bytes + headers, allowlist refusals, export format/no-browser refusals, chrome argv');
 
 // A file where the home directory belongs: openStore cannot create the library,
 // and apply must log and leave the plugin unregistered instead of throwing.
@@ -443,5 +623,367 @@ assert.equal(page.type, 'div');
 assert.equal(page.props.className, 'stu-page');
 assert.equal(page.children.length, 2, 'the page shell holds its header and body');
 pass('client: registrations, dictionary parity, effects with cleanup, shell renders');
+
+/* ── Phase 2: drafts, preview overlay, export flow ────────────────────────── */
+
+assert.ok(clientApi.inject.includes('uiWorkspace'), 'the client declares the Workspace service it drafts through');
+
+// The service reaches the page through the slot's inject face; with no service
+// the page still renders and the composer explains why drafting is off.
+const pageProps = slots[1].spec.inject();
+assert.equal(typeof pageProps.t, 'function');
+assert.equal(pageProps.workspace, null, 'a page without the service degrades instead of throwing');
+
+/** Depth-first walk of a stubbed element tree. */
+function findElement(node, predicate) {
+  if (!node || typeof node !== 'object') return null;
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      const found = findElement(child, predicate);
+      if (found) return found;
+    }
+    return null;
+  }
+  if (predicate(node)) return node;
+  for (const child of node.children ?? []) {
+    const found = findElement(child, predicate);
+    if (found) return found;
+  }
+  return null;
+}
+
+/** Every element matching `predicate`, depth first. */
+function findElements(node, predicate, found = []) {
+  if (!node || typeof node !== 'object') return found;
+  if (Array.isArray(node)) {
+    for (const child of node) findElements(child, predicate, found);
+    return found;
+  }
+  if (predicate(node)) found.push(node);
+  for (const child of node.children ?? []) findElements(child, predicate, found);
+  return found;
+}
+
+/* The prompt builders are read by a person before they send. They name the
+   skill and the process in plain language, never a tool id or a module token,
+   give a worked example instead of an angle-bracket placeholder, and end with
+   one editable-draft hint. */
+const free = L.freeBrief('a poster for the harvest fair');
+assert.match(free, /studio skill/i, 'the prompt names the skill');
+assert.match(free, /harvest fair/, 'the prompt carries the user’s brief');
+assert.match(free, /\n\nThe design task is: a poster for the harvest fair\.\n\n/, 'the brief is its own punctuated paragraph, never a run-on');
+assert.match(free, /three directions/i, 'the gate happens in chat');
+assert.match(free, /save it to my works/i, 'the result is saved without naming a tool id');
+assert.ok(!/studio_library|\bmodule\b|[<>]/.test(free), 'no tool ids, module tokens or angle-bracket placeholders');
+assert.match(free.trim().split('\n').at(-1), /^This is a starting point — edit it before sending\.$/, 'ends with the edit hint');
+assert.match(L.freeBrief('stop here!'), /design task is: stop here!\n/, 'existing punctuation is not doubled');
+assert.equal(L.freeBrief('   '), '', 'an empty brief builds nothing');
+
+for (const module of ['deck', 'web', 'motion', 'infographic']) {
+  const prompt = L.quickStart(module);
+  assert.match(prompt, /studio skill/i, `${module} names the skill`);
+  const lines = prompt.trim().split('\n');
+  assert.match(lines.at(-1), /^This is a starting point — edit it before sending\.$/, `${module} ends with the edit hint`);
+  const topic = lines.find((line) => line.startsWith('Topic: '));
+  assert.ok(topic, `${module} carries a worked topic example`);
+  assert.ok(topic.length > 'Topic: '.length, `${module} topic has words to overwrite`);
+  assert.ok(!/[<>]/.test(prompt), `${module} has no angle-bracket placeholder`);
+  assert.ok(!/studio_library|\bmodule\b/i.test(prompt), `${module} has no internal vocabulary`);
+  assert.ok(!new RegExp(`\\b${module}\\b module`, 'i').test(prompt), `${module} is never named as a token`);
+}
+assert.match(L.quickStart('motion'), /video in this conversation/i, 'motion says the piece arrives as a video');
+assert.ok(!/video in this conversation/i.test(L.quickStart('deck')), 'the video note belongs to motion only');
+assert.equal(L.quickStart('wobble'), '', 'an unknown module builds no prompt');
+
+const likeWork = {
+  id: 'WORK-7',
+  path: '/home/person/decks/offsite.html',
+  module: 'deck',
+  theme: 'Editorial',
+  title: 'Offsite deck',
+};
+const like = L.makeLike(likeWork);
+assert.match(like, /studio skill/i);
+assert.match(like, /Find the work titled 'Offsite deck' in my works library/, 'the reference is named by title');
+assert.match(like, /theme: 'Editorial'/, 'the theme is named');
+assert.ok(!like.includes(likeWork.path), 'no absolute path in the prompt');
+assert.ok(!/studio_library|\bmodule\b|[<>]/.test(like), 'no tool ids, module tokens or angle-bracket placeholders');
+assert.match(like, /as a deck/, 'the new work is described in plain words');
+assert.match(like, /New content: a launch page for our autumn workshops/, 'the new-content line is a worked example');
+assert.match(like.trim().split('\n').at(-1), /^This is a starting point — edit it before sending\.$/);
+const unthemed = L.makeLike({ path: '/x.html', module: 'web' });
+assert.match(unthemed, /theme: not recorded/, 'a work without a theme still builds');
+assert.ok(!unthemed.includes('/x.html'), 'no path leaks for an unthemed work either');
+assert.match(unthemed, /as a landing page/, 'web is described as a landing page');
+assert.ok(!/a new web\b/.test(unthemed), 'never "a new web"');
+
+/* The one call into the Workspace service, isolated so the assertion is about
+   the contract rather than React state. */
+const workspace = {
+  calls: [],
+  startSession(workspaceId, options) {
+    this.calls.push({ workspaceId, options });
+  },
+};
+assert.equal(L.startSessionFor(workspace, 'use the studio skill'), true);
+// The call object is built in the harness's realm, so compare its fields one by
+// one rather than by prototype-sensitive deep equality.
+assert.equal(workspace.calls[0].workspaceId, undefined, 'no workspace: the current one is used');
+assert.equal(workspace.calls[0].options.prompt, 'use the studio skill');
+assert.equal(workspace.calls[0].options.whenDraftExists, 'replace');
+assert.equal(L.startSessionFor(workspace, '   '), false, 'an empty prompt asks for nothing');
+assert.equal(workspace.calls.length, 1);
+assert.equal(L.startSessionFor(null, 'text'), false, 'a missing service is a refusal, not a throw');
+
+assert.equal(L.draftBrief(workspace, 'a deck for the offsite'), true);
+assert.equal(workspace.calls[1].options.prompt, L.freeBrief('a deck for the offsite'), 'Draft it sends the built prompt');
+assert.equal(workspace.calls[1].options.whenDraftExists, 'replace');
+assert.equal(L.draftBrief(workspace, '   '), false, 'an empty brief does nothing');
+assert.equal(workspace.calls.length, 2);
+
+// The outcome helper keeps the visible copy friendly and the exception text
+// out of the sentence (it goes to the error row's title only).
+const noService = L.draftFrom(null, 'text', (key) => key);
+assert.equal(noService.ok, false);
+assert.equal(noService.error, 'draftUnavailable');
+assert.equal(noService.detail, undefined);
+const boomService = { startSession() { throw new Error('boom'); } };
+const failedDraft = L.draftFrom(boomService, 'text', (key) => key);
+assert.equal(failedDraft.ok, false);
+assert.equal(failedDraft.error, 'draftFailed');
+assert.equal(failedDraft.detail, 'boom');
+const svc = { calls: [], startSession(workspaceId, options) { this.calls.push({ workspaceId, options }); } };
+assert.equal(L.draftFrom(svc, 'text', (key) => key).ok, true);
+
+clientApi.apply({
+  effect: () => {},
+  get: (name) => (name === 'uiWorkspace' ? svc : undefined),
+  locale: { register: () => () => {}, bind: () => (key) => key },
+  slots: { inject: (_name, callback) => callback(), register: () => () => {} },
+});
+assert.equal(clientApi.__logic.workspaceService({ uiWorkspace: svc }), svc, 'the service is found on the context');
+assert.equal(clientApi.__logic.workspaceService({}), null, 'no service means no drafting');
+
+/* Export and preview requests are functions with an injected fetch, so the
+   success and error paths are asserted without a browser. */
+const detailWork = {
+  id: 'WORK-3',
+  title: 'Draft poster',
+  path: '/home/person/pages/draft.html',
+  module: 'web',
+  theme: 'Editorial',
+  createdAt: '2026-11-18T09:00:00Z',
+  thumb: null,
+};
+
+const exportCalls = [];
+const okExportFetch = async (url, init) => {
+  exportCalls.push({ url, init });
+  return {
+    ok: true,
+    headers: { get: (name) => (name === 'content-disposition' ? 'attachment; filename="Draft poster.png"' : null) },
+    blob: async () => 'BLOB',
+  };
+};
+const okExport = await L.downloadExport(okExportFetch, detailWork, 'png');
+assert.equal(okExport.ok, true);
+assert.equal(okExport.blob, 'BLOB');
+assert.equal(okExport.filename, 'Draft poster.png', 'the download name comes from the response header');
+assert.match(exportCalls[0].url, /api\/studio\/export\?id=WORK-3&format=png$/, 'the export URL is the fetch target');
+assert.equal(exportCalls[0].init.cache, 'no-store');
+assert.equal(exportCalls[0].init.credentials, 'same-origin');
+
+const failingExportFetch = async () => ({
+  ok: false,
+  status: 503,
+  json: async () => ({ ok: false, code: 'no_browser', error: 'No browser found to render this work' }),
+});
+const failedExport = await L.downloadExport(failingExportFetch, detailWork, 'png');
+assert.equal(failedExport.ok, false);
+assert.equal(failedExport.error, 'No browser found to render this work', 'the Host sentence is shown, not saved as a file');
+
+const plainFailureFetch = async () => ({
+  ok: false,
+  status: 500,
+  json: async () => {
+    throw new Error('not json');
+  },
+});
+assert.match((await L.downloadExport(plainFailureFetch, detailWork, 'png')).error, /HTTP 500/);
+const offlineFetch = async () => {
+  throw new Error('offline');
+};
+assert.match((await L.downloadExport(offlineFetch, detailWork, 'png')).error, /Could not reach the server/);
+const noHeaderExport = await L.downloadExport(
+  async () => ({ ok: true, headers: { get: () => null }, blob: async () => 'BLOB' }),
+  detailWork,
+  'pdf',
+);
+assert.equal(noHeaderExport.filename, 'studio-work.pdf', 'a missing header falls back to a safe name');
+
+const previewCalls = [];
+const okProbe = await L.probePreview(async (url, init) => {
+  previewCalls.push({ url, init });
+  return { ok: true };
+}, detailWork);
+assert.equal(okProbe.ok, true);
+assert.match(previewCalls[0].url, /api\/studio\/preview\?id=WORK-3$/);
+const missingProbe = await L.probePreview(
+  async () => ({ ok: false, status: 404, json: async () => ({ error: 'no work WORK-3' }) }),
+  detailWork,
+);
+assert.equal(missingProbe.ok, false);
+assert.equal(missingProbe.error, 'no work WORK-3', 'the 404 sentence reaches the failed state');
+const downProbe = await L.probePreview(async () => {
+  throw new Error('down');
+}, detailWork);
+assert.equal(downProbe.ok, false);
+assert.equal(downProbe.error, null);
+
+/* HomeView is presentational: the page owns the brief, so a render can pin both
+   the disabled state and the click contract without a React renderer. */
+const homeFor = (brief, onDraft, onQuick = () => {}) =>
+  L.HomeView({
+    works: [],
+    status: 'ready',
+    error: null,
+    brief,
+    onBrief: () => {},
+    onDraft,
+    canDraft: true,
+    onQuick,
+    onRetry: () => {},
+    onOpenWork: () => {},
+    onSeeAll: () => {},
+    t: (key) => key,
+  });
+
+const draftCalls = [];
+const readyHome = homeFor('a deck for the offsite', () => draftCalls.push(L.freeBrief('a deck for the offsite')));
+const area = findElement(readyHome, (element) => element.type === 'textarea');
+assert.equal(area.props.readOnly, undefined, 'the composer is editable');
+assert.equal(area.props.value, 'a deck for the offsite');
+assert.equal(area.props.placeholder, 'briefPlaceholder');
+assert.equal(typeof area.props.onChange, 'function', 'typing updates the page');
+const primary = findElement(readyHome, (element) => element.type === 'button' && element.props.className === 'stu-primary');
+assert.equal(primary.props.disabled, false, 'Draft it is enabled for a non-empty brief');
+assert.equal(primary.props['aria-describedby'], 'stu-draft-note', 'Draft it is described by its note');
+const draftNote = findElement(readyHome, (element) => element.props?.id === 'stu-draft-note');
+assert.equal(draftNote.props.className, 'stu-note', 'the note is a normal-size line, not a caption');
+primary.props.onClick();
+assert.equal(draftCalls.length, 1, 'Draft it calls the draft action');
+
+const emptyHome = homeFor('   ', () => draftCalls.push('called'));
+const emptyPrimary = findElement(emptyHome, (element) => element.type === 'button' && element.props.className === 'stu-primary');
+assert.equal(emptyPrimary.props.disabled, true, 'Draft it is off for an empty brief');
+
+const quickModules = [];
+const chipHome = homeFor('x', () => {}, (module) => quickModules.push(module));
+const chips = findElements(chipHome, (element) => element.type === 'button' && element.props.className === 'stu-chip');
+assert.equal(chips.length, 4, 'the four quick starts are buttons');
+assert.ok(chips.every((chip) => chip.props.disabled === false), 'the chips are enabled when the service exists');
+chips[0].props.onClick();
+assert.deepEqual(quickModules, ['deck'], 'a chip drafts its own module');
+
+/* The detail panel: primary preview, no dead buttons for a video, the same
+   make-like treatment as the chips, and errors kept with the actions. */
+let previewOpens = 0;
+const likeCallsBefore = workspace.calls.length;
+const detail = L.WorkDetail({
+  work: detailWork,
+  onClose: () => {},
+  onPreview: () => { previewOpens += 1; },
+  workspace,
+  canDraft: true,
+  t: (key) => key,
+});
+assert.match(L.previewUrl(detailWork), /api\/studio\/preview\?id=WORK-3$/);
+assert.match(L.exportUrl(detailWork, 'png'), /api\/studio\/export\?id=WORK-3&format=png$/);
+assert.match(L.exportUrl(detailWork, 'pdf'), /api\/studio\/export\?id=WORK-3&format=pdf$/);
+assert.equal(L.exportUrl(detailWork, 'exe'), L.exportUrl(detailWork, 'png'), 'an unknown format falls back to png');
+assert.equal(L.isHtmlPath(detailWork.path), true);
+assert.equal(L.isHtmlPath('/home/person/motion/loop.mp4'), false);
+
+const previewButton = findElement(detail, (element) => element.type === 'button' && element.children.includes('preview'));
+assert.match(previewButton.props.className, /\bstu-primary\b/, 'Preview is the primary action');
+previewButton.props.onClick();
+assert.equal(previewOpens, 1, 'Preview opens the in-page overlay');
+
+const likeButton = findElement(detail, (element) => element.type === 'button' && element.children.includes('makeLike'));
+assert.equal(likeButton.props.disabled, false, 'Make one like this is enabled with the service');
+likeButton.props.onClick();
+assert.equal(workspace.calls.length, likeCallsBefore + 1, 'Make one like this asks for a conversation');
+assert.equal(workspace.calls.at(-1).options.prompt, L.makeLike(detailWork), 'it sends the make-like prompt');
+const detailNote = findElement(detail, (element) => element.props?.className === 'stu-note');
+assert.equal(detailNote.children[0], 'draftNote', 'the same one-liner sits beside the actions');
+
+const exportButtons = findElements(
+  detail,
+  (element) => element.type === 'button' && element.children.some((text) => text === 'exportPng' || text === 'exportPdf'),
+);
+assert.equal(exportButtons.length, 2, 'both formats are buttons, not raw download links');
+assert.ok(exportButtons.every((button) => button.props.disabled === false));
+assert.equal(findElements(detail, (element) => element.type === 'a' && element.props.href).length, 0, 'no plain download anchors');
+assert.equal(findElements(detail, (element) => element.type === 'a' && element.props.hidden === true).length, 1, 'the save anchor stays inside the tree');
+
+const videoDetail = L.WorkDetail({
+  work: { ...detailWork, path: '/home/person/motion/loop.mp4' },
+  onClose: () => {},
+  onPreview: () => {},
+  workspace,
+  canDraft: true,
+  t: (key) => key,
+});
+assert.equal(findElements(videoDetail, (element) => element.type === 'button' && element.children.includes('preview')).length, 0, 'a video hides Preview');
+assert.equal(
+  findElements(videoDetail, (element) => element.type === 'button' && element.children.some((text) => text === 'exportPng' || text === 'exportPdf')).length,
+  0,
+  'a video hides the exports',
+);
+assert.ok(findElements(videoDetail, (element) => element.children.some((text) => text === 'nonHtmlNote')).length > 0, 'the panel says where a video lives');
+assert.equal(findElements(videoDetail, (element) => element.type === 'button' && element.children.includes('copyPath')).length, 1, 'Copy path stays');
+
+const noSvcDetail = L.WorkDetail({
+  work: detailWork,
+  onClose: () => {},
+  onPreview: () => {},
+  workspace: null,
+  canDraft: false,
+  t: (key) => key,
+});
+const noSvcLike = findElement(noSvcDetail, (element) => element.type === 'button' && element.children.includes('makeLike'));
+assert.equal(noSvcLike.props.disabled, true, 'Make one like this is disabled without the service');
+assert.equal(noSvcLike.props.title, 'draftUnavailable', 'and explains why');
+
+// Error ownership: the page no longer takes a make-like callback, and both
+// action errors render through ErrorRow inside the detail panel.
+assert.match(client, /actionError \? h\(ErrorRow/, 'make-like errors render inside the detail panel');
+assert.match(client, /exportError \? h\(ErrorRow/, 'export errors render inside the detail panel');
+assert.ok(!client.includes('onMakeLike'), 'the page does not own the make-like action');
+
+/* The overlay: a dialog, a pre-checked body with three states, and a close
+   button wired to the page. The iframe only appears once the route answered. */
+const readyBody = L.PreviewBody({ work: detailWork, state: 'ready', failure: null, onFailed: () => {}, t: (key) => key });
+assert.equal(readyBody.type, 'iframe', 'the ready state frames the work');
+assert.equal(readyBody.props.sandbox, 'allow-scripts', 'a delivered page gets scripts and nothing else');
+assert.match(readyBody.props.src, /api\/studio\/preview\?id=WORK-3$/);
+assert.equal(readyBody.props.title, 'preview');
+const checkingBody = L.PreviewBody({ work: detailWork, state: 'checking', failure: null, onFailed: () => {}, t: (key) => key });
+assert.equal(checkingBody.props.role, 'status', 'the checking state is a status');
+assert.equal(checkingBody.props['aria-busy'], true);
+const failedBody = L.PreviewBody({ work: detailWork, state: 'failed', failure: 'no work WORK-3', onFailed: () => {}, t: (key) => key });
+assert.equal(failedBody.props.role, 'alert', 'the failed state is an alert');
+assert.equal(failedBody.props.title, 'no work WORK-3', 'the Host sentence is the detail');
+
+let closed = 0;
+const overlay = L.PreviewOverlay({ work: detailWork, onClose: () => { closed += 1; }, t: (key) => key });
+const dialog = findElement(overlay, (element) => element.props?.role === 'dialog');
+assert.ok(dialog, 'the overlay is a dialog');
+assert.equal(dialog.props['aria-modal'], 'true');
+assert.equal(dialog.props.tabIndex, -1, 'the dialog takes focus');
+const closeButton = findElement(overlay, (element) => element.type === 'button' && element.children.includes('close'));
+closeButton.props.onClick();
+assert.equal(closed, 1, 'Close dismisses the overlay');
+pass('P2 client: plain prompts, Draft it + make-like contract, preview states, export fetch flow, motion detail, service degrade');
 
 process.stdout.write('studio selftest: ok\n');

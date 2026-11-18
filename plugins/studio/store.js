@@ -335,6 +335,19 @@ export function openStore(dir) {
     return { work, created: true };
   }
 
+  /**
+   * One work by id. The page and its preview/export routes name works this way,
+   * so a request can never supply a path: the row is the only source of one.
+   * @throws {StudioError} `not_found` for an id the library does not hold.
+   */
+  function findWork(id) {
+    const key = typeof id === 'string' ? id.trim() : '';
+    if (!key) throw new StudioError('a work id is required', 'missing_id');
+    const work = readLibrary(libraryPath).find((row) => row.id === key);
+    if (!work) throw new StudioError(`no work ${key}`, 'not_found', 404);
+    return work;
+  }
+
   /** Withdraw one work. The artifact itself is never touched. */
   function removeWork(id) {
     const key = typeof id === 'string' ? id.trim() : '';
@@ -347,5 +360,5 @@ export function openStore(dir) {
     return removed;
   }
 
-  return { dir, libraryPath, thumbsDir, addWork, listWorks, removeWork };
+  return { dir, libraryPath, thumbsDir, addWork, listWorks, removeWork, findWork };
 }

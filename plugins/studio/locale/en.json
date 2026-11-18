@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "Studio",
-    "description": "The design studio's page: a brief composer placeholder and the works library of delivered designs. A delivered design is registered automatically, and each work shows its type, theme and file path in a thumbnail grid. Drafting from the page is not ready yet; for now, ask in chat. Everything is kept locally under the profile's studio directory."
+    "description": "The design studio's page: a brief composer that opens a prefilled conversation, quick starts for a deck, landing page, motion loop or infographic, and the works library of delivered designs. Each work shows its type, theme and file path, previews HTML in place, exports to PNG or PDF, and can seed a new work in the same visual language. Everything is kept locally under the profile's studio directory."
   },
   "ui": {
     "panel": "Studio",
@@ -12,8 +12,7 @@
     "brief": "Brief",
     "briefPlaceholder": "What should the studio make?",
     "draft": "Draft it",
-    "comingSoon": "Not ready yet.",
-    "composerNote": "Drafting from here isn't ready yet — for now, ask in chat.",
+    "draftNote": "Opens a new conversation with the words written out — review, then send.",
     "quickStarts": "Quick starts",
     "quickDeck": "A deck",
     "quickWeb": "A landing page",
@@ -36,6 +35,17 @@
     "copyPath": "Copy path",
     "copied": "Copied",
     "copyFailed": "Select the path and copy it.",
+    "preview": "Preview",
+    "previewLoading": "Loading the preview…",
+    "previewFailed": "The preview could not load. The file may be missing, or too large to show here.",
+    "nonHtmlNote": "Video and other non-page works open in chat — copy the path to find the file.",
+    "makeLike": "Make one like this",
+    "exportPng": "Export PNG",
+    "exportPdf": "Export PDF",
+    "exportPreparing": "Preparing…",
+    "exportFailed": "Could not export this work. Try again.",
+    "draftFailed": "Could not open a new conversation. Your brief is still here.",
+    "draftUnavailable": "Drafting isn't available here — you can still ask in chat.",
     "close": "Close",
     "selectHint": "Choose a work to see its details."
   }

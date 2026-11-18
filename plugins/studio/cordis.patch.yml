@@ -7,8 +7,14 @@
 #    package there keeps the path correct whether the package is linked or
 #    installed.
 # 2. The package's own row runs this package's `apply()` and its browser half:
-#    the works library the model registers deliveries into, and the Studio page
-#    that lists them.
+#    the works library the model registers deliveries into, the routes the page
+#    reads (list, thumbnails, in-page preview, PNG/PDF export), and the Studio
+#    page itself.
+#
+#    Optional `config.chromeBinary` names the Chromium binary the export route
+#    spawns. Leave it empty (the default) and the row auto-detects the newest
+#    `chrome-headless-shell`/`chromium` under `~/.cache/ms-playwright`; setting
+#    it is for a machine whose browser lives elsewhere.
 - insert:
     - id: dsh-studio-skill
       name: '@deepseek-ai/dsh-skill-filesystem'

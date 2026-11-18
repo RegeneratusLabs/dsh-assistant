@@ -8,20 +8,25 @@
  * means the owner cookie, Host/Origin fence and ownership check run before any
  * handler, exactly as they do for the other pages.
  *
- * There is one tool and two routes:
+ * There is one tool and four routes:
  *
  *  - `studio_library` — the model registers a delivered file at delivery time.
  *  - `GET /api/studio` — the page's list.
  *  - `GET /api/studio/thumb` — one thumbnail file from `studio/thumbs/`.
+ *  - `GET /api/studio/preview` — one work's HTML, for the page's overlay.
+ *  - `GET /api/studio/export` — the work rendered to PNG or PDF for download.
  *
  * Everything the plugin reads or writes lives under `$DSH_HOME/studio`:
- * `library.json` and `thumbs/`. The delivered artifact is only ever a path in a
- * row, which is what keeps this plugin out of the user's project directories.
+ * `library.json`, `thumbs/` and the transient `exports/`. The delivered artifact
+ * is only ever a path in a row, which is what keeps this plugin out of the
+ * user's project directories; the preview and export routes resolve that path
+ * from the row a request's id names, never from the request itself.
  */
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+import { exportResponse, previewResponse, resolveChrome } from './export.js';
 import { openStore, StudioError } from './store.js';
 import { buildTools } from './tools.js';
 
@@ -103,10 +108,12 @@ function thumbResponse(store, request) {
 
 /**
  * @param ctx - Cordis context carrying `connection` and `tools`.
- * @param config - loader row config; the library lives at a fixed, private path.
+ * @param config - loader row config; `chromeBinary` overrides the browser used
+ *   for exports, and an empty value auto-detects the Playwright headless shell.
  */
 export async function apply(ctx, config) {
   const dir = libraryDir();
+  const chromeBinary = resolveChrome(config ?? {});
 
   let store;
   try {
@@ -145,13 +152,29 @@ export async function apply(ctx, config) {
     fetch: guard(async (request) => thumbResponse(store, request)),
   });
 
+  const previewRoute = await ctx.connection.fetch.register({
+    path: '/api/studio/preview',
+    methods: ['GET'],
+    requestBody: 'buffered',
+    fetch: guard(async (request) => previewResponse(store, request)),
+  });
+
+  const exportRoute = await ctx.connection.fetch.register({
+    path: '/api/studio/export',
+    methods: ['GET'],
+    requestBody: 'buffered',
+    fetch: guard(async (request) => exportResponse(store, request, chromeBinary)),
+  });
+
   ctx.effect(
     () => () => {
       void listRoute();
       void thumbsRoute();
+      void previewRoute();
+      void exportRoute();
     },
     'dsh-studio: /api routes',
   );
 
-  console.error(`[dsh-studio] library=${store.libraryPath}`);
+  console.error(`[dsh-studio] library=${store.libraryPath} chrome=${chromeBinary || 'missing'}`);
 }
