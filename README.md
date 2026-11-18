@@ -1,5 +1,7 @@
 # dsh-assistant
 
+English | [简体中文](README.zh-CN.md)
+
 An assistant profile for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness).
 Everything is a plugin: identity, memory, learning, browsing and connectors.
 
