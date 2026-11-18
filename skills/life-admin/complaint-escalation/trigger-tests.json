@@ -1,0 +1,26 @@
+{
+  "should_fire": [
+    "they won't refund me and it's been three weeks of emails",
+    "write a complaint letter to this shop, they sold me something broken",
+    "this company is ignoring me, I've written twice and heard nothing",
+    "escalate this please, the support chat just closes my ticket every time",
+    "I need a strong email, they cancelled my booking and kept the money",
+    "the repair they promised never happened, what do I write to them",
+    "help me complain about a delivery that never arrived",
+    "I paid for a course I couldn't access, how do I get my money back",
+    "how do I take a complaint to an ombudsman if they keep refusing",
+    "I want a paper trail before I ask my bank to reverse the card payment"
+  ],
+  "should_not_fire": [
+    "my neighbour won't pay me back for the fence, write him a message",
+    "help me appeal my exam grade, the marking was unfair",
+    "explain this rejection letter from the insurer, I don't know what it means",
+    "go through my subscriptions and tell me what to cancel",
+    "help me fill in the small claims form so I can start a case",
+    "is my boss allowed to make me work weekends",
+    "write a bad review on a review site so other people see what they did",
+    "soften this complaint email I already wrote, it sounds too angry",
+    "how much compensation am I legally owed for a delayed flight",
+    "my landlord is keeping my deposit, write him a letter about it"
+  ]
+}

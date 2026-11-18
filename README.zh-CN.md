@@ -3,9 +3,9 @@
 [English](README.md) | 简体中文
 
 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的助手 profile。
-一切都是插件：身份、记忆、学习、浏览与连接器。
+代码是插件；任务知识是技能。
 
-早期阶段。一个 profile、七个插件，暂无发布渠道。
+早期阶段。一个 profile、七个插件、四个技能包，暂无发布渠道。
 
 ## 环境要求
 
@@ -36,12 +36,23 @@ npm run doctor
 | 插件 | 作用 |
 |---|---|
 | `@local/dsh-soul` | 以提示词顺序 0 注入 `soul/SOUL.md`。直接编辑该文件即可，无需重启或改配置。 |
-| `@local/dsh-memory` | 一个有容量上限的 `memory/profile.json`，外加 `memory_remember` / `memory_recall` / `memory_forget`。默认本地保存；Hindsight 需显式开启。 |
+| `@local/dsh-memory` | 一个有容量上限的 `memory/profile.json`，外加 `memory_remember` / `memory_recall` / `memory_forget`。默认本地保存；Hindsight 需显式开启。开启 Hindsight 后，每轮一次有上限的自动召回会把最匹配的已存事实注入对话（在 memory 行设 `recallInject: false` 可关闭）。 |
 | `@local/dsh-learn` | 在后台复盘一次已完成的对话轮次，并在 `$DSH_HOME` 下记录持久记忆与程序性技能，附带审计日志、容量上限，且不弹审批提示。它不出现在任务列表里；被复盘的轮次只会在回复下方加一行不显眼的脚注（`learned 1 memory`，写入技能时还会附带技能名），完整记录在 `learning/audit.jsonl`。只要人类写下了足以表达某件持久事实的内容，或者工作本身足够扎实（8 次以上工具调用或很长的最终答复），该轮次就会进入复盘——所以一句只有一行、却跑了二十分钟的请求同样会被复盘。 |
 | `@local/dsh-connectors` | Connectors 页面：Gmail、Outlook、Slack、Google 日历/云盘、Dropbox、Notion、HubSpot、Stripe、QuickBooks、Xero 和 Shopify，通过 Composio 进行连接/断开，外加带探活/重启的实时 MCP 服务器集群。Composio 密钥从页面保存；会话 MCP 会把已连接的应用暴露为工具。 |
 | `@local/dsh-organiser` | 日程管理器：Day、Week、Month 三种视图，覆盖计划、每天的纯文本笔记和 DSH 自动化任务，每个日历一种颜色，周视图可直接点击创建条目。提醒（“给我发一条聊天消息”）与自动化任务从日历经 Schedule 服务创建；已完成的计划保持可见并加删除线，垃圾箱会真正删除。日历条带会提示尚未连接任何日历；下一步是通过 Connectors 读取 Google 日历。 |
 | `@local/dsh-browse` | 浏览栈。第 1 层是宿主的 `web_fetch`；第 2 层是基于 CamoFox 服务器的 `browse`（JS 页面、会话、下载、验证码即停）；第 3 层是 `render_html`（用 chromium 把我们自己的 HTML 按精确毫米数打印成 PDF/PNG）和 `render_view`（同样的渲染，但一次调用同时返回图像与排版检查——文字超出边缘、盒子被裁剪、小于 15px 的字号、绘制文本碰撞）。 |
 | `dsh-softshell` | 个人界面，以单个包交付。它隐藏开发者界面元素（Trajectory 与多余视图、模型与访问模式选择器、agent 预设标签、轮次/token 徽标、每轮的 “Edited N files” 卡片、分支操作），在空白屏幕上放置四个日常入口，把工作区文件夹放在附件控件旁，新增带内联 “read N pages” 行的 **Sources** 面板与每轮条带，朗读答复，并添加一条带 `ambient_place` / `ambient_weather` 的 `Right now: …` 提示行。一个 bundle 开关即可全部关闭。 |
+
+## 技能
+
+任务知识以纯 `SKILL.md` 文件夹的形式放在 `skills/<cluster>/<name>/` 下，每个聚类对应
+一个轻量技能包：`@local/dsh-skill-pack-daily-ops`（晨报、任务清单、记忆管家、交接）、
+`-life-admin`（账单、投诉、文件解读、表格）、`-home-family`（就诊准备、长者照护、
+礼物、餐食规划）和 `-research-decisions`（购买调研、事实核查、决策访谈、辅导）。
+每个技能包在 **Plugins** 页面上是一个 bundle；它的行配置在 `skills` 下为每个技能带一个
+布尔开关，只有设为 `true` 的技能才会被提供——不用移除技能包就能关掉单个技能。编辑
+技能树之后，运行 `node bin/assistant.mjs sync-skills` 刷新技能包内的副本；两者一旦
+不一致，`npm test` 会失败。
 
 ## 数据与隐私
 

@@ -1,0 +1,26 @@
+{
+  "should_fire": [
+    "gift idea for my mother, she's impossible to buy for",
+    "her birthday is coming up and I have nothing",
+    "he mentioned wanting a new coffee grinder, remember that",
+    "what should I get my partner for our anniversary",
+    "don't let me buy my sister the same thing twice",
+    "I need a housewarming present under 30",
+    "keep a list of gift ideas for my kids",
+    "what do I get my friend who just had a baby",
+    "Christmas is coming, help me sort presents for everyone",
+    "she said she's saving up for a trip, any gift idea"
+  ],
+  "should_not_fire": [
+    "plan meals for the week",
+    "what should I ask the doctor",
+    "help me write my own birthday wish list",
+    "organise Secret Santa for 30 colleagues",
+    "coordinate my dad's care appointments",
+    "wrap this present nicely",
+    "write a thank-you note for a gift I received",
+    "find a restaurant for her birthday dinner",
+    "is this toy safe for a two-year-old",
+    "buy this gift online and ship it to her"
+  ]
+}

@@ -1,0 +1,23 @@
+# Bundle patch for the home-family skill pack. One Host row registers the
+# pack's vendored SKILL.md files with the Host's skill registry. It adds no
+# tools and no second skill format. The browser half is this row's Configure
+# form on the Web Plugins page (exports["./client"] points at the shared
+# skill-pack client), which writes the flags below and nothing else.
+#
+# `skills` is one boolean per vendored skill, and a skill is served only while
+# its flag is true. An override replaces this row's complete config, so repeat
+# every skill and flip only the one you mean:
+#
+#   - id: dsh-skill-pack-home-family
+#     config:
+#       skills:
+#         appointment-prep: false
+- insert:
+    - id: dsh-skill-pack-home-family
+      name: '@local/dsh-skill-pack-home-family'
+      config:
+        skills:
+          appointment-prep: true
+          elder-care: true
+          gift-registry: true
+          meal-plan-groceries: true

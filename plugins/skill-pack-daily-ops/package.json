@@ -1,0 +1,33 @@
+{
+  "name": "@local/dsh-skill-pack-daily-ops",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Skill pack for daily operations: the morning brief, the task board, the durable-memory caretaker and the session handoff. Vendored from skills/daily-ops/ by bin/assistant.mjs sync-skills; one boolean per skill in the row config.",
+  "type": "module",
+  "exports": {
+    ".": "./index.js",
+    "./client": "../skill-pack-shared/client.mjs",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "cordis.patch.yml",
+    "assets"
+  ],
+  "peerDependencies": {
+    "@deepseek-ai/schemastery": "3.19.0"
+  },
+  "dsh": {
+    "manifestVersion": 1,
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-plugin-manager"
+      ]
+    }
+  }
+}

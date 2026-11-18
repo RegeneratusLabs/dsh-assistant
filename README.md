@@ -3,9 +3,9 @@
 English | [简体中文](README.zh-CN.md)
 
 An assistant profile for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness).
-Everything is a plugin: identity, memory, learning, browsing and connectors.
+Code is a plugin; task knowledge is a skill.
 
-Early. One profile, seven plugins, no channel yet.
+Early. One profile, seven plugins, four skill packs, no channel yet.
 
 ## Requirements
 
@@ -37,12 +37,24 @@ existing DSH home or the host.
 | Plugin | What it does |
 |---|---|
 | `@local/dsh-soul` | Injects `soul/SOUL.md` at prompt order 0. Edit the file; no restart config. |
-| `@local/dsh-memory` | A bounded `memory/profile.json` plus `memory_remember` / `memory_recall` / `memory_forget`. Local by default; Hindsight is opt-in. |
+| `@local/dsh-memory` | A bounded `memory/profile.json` plus `memory_remember` / `memory_recall` / `memory_forget`. Local by default; Hindsight is opt-in. When Hindsight is on, one bounded automatic recall per turn injects the top matching stored facts into the conversation (`recallInject: false` on the memory row disables it). |
 | `@local/dsh-learn` | Reviews a completed turn in the background and records durable memory plus procedural skills under `$DSH_HOME`, with an audit log, caps and no approval prompt. It stays out of the job list; a changed turn adds one dim footnote under the reply (`learned 1 memory`, plus a skill name when one was written), and `learning/audit.jsonl` is the full record. A turn qualifies when the human wrote enough to state something durable *or* when the work itself was substantial (8+ tool calls or a long final answer), so a one-line request that ran for twenty minutes is still reviewed. |
 | `@local/dsh-connectors` | The Connectors page: Gmail, Outlook, Slack, Google Calendar/Drive, Dropbox, Notion, HubSpot, Stripe, QuickBooks, Xero and Shopify with Connect/Disconnect through Composio, plus the live MCP server fleet with probe/restart. The Composio key is saved from the page; a session MCP exposes the connected apps as tools. |
 | `@local/dsh-organiser` | The organiser: Day, Week and Month views over plans, a plain-text note per day and DSH automation tasks, with a colour per calendar and a week grid you can click to create. Reminders ("send me a chat message") and automation tasks are created from the calendar through the Schedule service; a done plan stays visible and struck through, and the trash deletes it. The calendar band reports that no calendar is connected; reading Google Calendar through Connectors is the next step. |
 | `@local/dsh-browse` | The browsing stack. Tier 1 is the host's `web_fetch`; tier 2 is `browse` over the CamoFox server (JS pages, sessions, downloads, captcha stop); tier 3 is `render_html` (chromium printing our own HTML to PDF/PNG at exact millimetres) and `render_view` (same render, but returns the image and a layout check — text past the edge, clipped boxes, sub-15px type, painted-text collisions — in one call). |
 | `dsh-softshell` | The personal surface, shipped as one package. It hides the developer chrome (Trajectory and extra views, the model and access-mode pickers, the agent-preset label, turn/token pills, the per-turn “Edited N files” card, the branch action), puts four everyday starters on the blank screen with the workspace folder beside the attach control, adds a **Sources** pane with inline “read N pages” rows and a per-turn band, reads answers aloud, and adds a `Right now: …` prompt line with `ambient_place` / `ambient_weather`. One bundle switch turns all of it off. |
+
+## Skills
+
+Task knowledge ships as plain `SKILL.md` folders under `skills/<cluster>/<name>/`, one
+cluster per thin pack: `@local/dsh-skill-pack-daily-ops` (morning brief, task board,
+memory keeper, handoff), `-life-admin` (bills, complaints, documents, forms),
+`-home-family` (appointments, elder care, gifts, meal plans) and
+`-research-decisions` (buying research, claim checks, decision interviews, tutoring).
+Each pack is one bundle on the **Plugins** page; its row config carries one boolean per
+skill under `skills`, and only a skill set to `true` is served, so one skill can be off
+without removing the pack. After editing the tree, refresh the packs' vendored copies
+with `node bin/assistant.mjs sync-skills`; `npm test` fails when the two drift.
 
 ## Data and privacy
 

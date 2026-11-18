@@ -1,0 +1,30 @@
+{
+  "should_fire": [
+    "add a task: renew the car insurance",
+    "put this on my list, chase the refund",
+    "I keep forgetting to call the dentist",
+    "what's on my list?",
+    "mark the bins task done",
+    "remind me to email the school about the trip",
+    "note to self: check the boiler filter",
+    "cross off the passport thing, it's done",
+    "clean up my task list, some of it is stale",
+    "what's left on my list",
+    "add these three things to my to-do list: call the bank, book the car in, buy stamps",
+    "show me my open tasks"
+  ],
+  "should_not_fire": [
+    "remember that I'm vegetarian",
+    "wrap this up for later, I'll continue tomorrow",
+    "good morning, brief me",
+    "put a meeting with Pat on my calendar for Tuesday at ten",
+    "remind me at four to take the bread out",
+    "what do you know about me?",
+    "make a shopping list for tonight's dinner",
+    "write a plan for moving house over the next two months",
+    "what's today look like",
+    "forget my old address",
+    "add a note to the handoff about the open question",
+    "draft an email to the landlord about the heating"
+  ]
+}

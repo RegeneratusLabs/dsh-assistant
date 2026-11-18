@@ -1,0 +1,30 @@
+{
+  "should_fire": [
+    "good morning",
+    "brief me",
+    "what's today look like?",
+    "start my day",
+    "morning, what's on today?",
+    "catch me up on today",
+    "what do I need to know this morning?",
+    "give me the morning rundown",
+    "what's the weather and what's on my plate today?",
+    "I'm back after two days away, what's today looking like?",
+    "run my morning brief",
+    "what's happening today?"
+  ],
+  "should_not_fire": [
+    "remember that I like my coffee black",
+    "add call the plumber to my list",
+    "what's on my list?",
+    "wrap this up for later, I'll pick it up tomorrow",
+    "look into heat pumps for me, I have all morning",
+    "read me the headlines",
+    "book me a table for tonight",
+    "summarise yesterday's meeting notes",
+    "plan my whole week hour by hour",
+    "good morning, can you write me a cover letter?",
+    "how did today go?",
+    "what's the weather in Testville next month?"
+  ]
+}

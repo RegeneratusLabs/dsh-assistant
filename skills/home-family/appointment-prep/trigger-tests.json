@@ -1,0 +1,26 @@
+{
+  "should_fire": [
+    "I have a doctor's appointment on Tuesday and I always freeze",
+    "what should I ask the doctor about my knee",
+    "help me get ready for my specialist appointment",
+    "I need to write down my symptoms before I see the doctor",
+    "dentist appointment tomorrow, what do I need to tell them",
+    "can you make a list of my medications for the appointment",
+    "I'm taking my dad to his cardiology appointment, help me prepare",
+    "how do I tell my doctor everything in ten minutes",
+    "follow-up visit next week, I want to remember what changed",
+    "make me a one-page summary for the consultant"
+  ],
+  "should_not_fire": [
+    "what causes high blood pressure",
+    "is this lump something to worry about",
+    "book me a dentist appointment",
+    "mum's care home appointments and medication schedule",
+    "help me get ready for a job interview",
+    "plan meals for the week",
+    "what should I get my sister for her birthday",
+    "explain these blood test results to me",
+    "dad's medication keeps changing, help me track it",
+    "I need a gift idea for my partner's birthday"
+  ]
+}

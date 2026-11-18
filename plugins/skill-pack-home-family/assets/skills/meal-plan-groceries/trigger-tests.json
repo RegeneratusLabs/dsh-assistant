@@ -1,0 +1,26 @@
+{
+  "should_fire": [
+    "plan meals for this week, there are four of us",
+    "what's for dinner? I'm completely out of ideas",
+    "make me a grocery list for the week",
+    "plan the shopping so I stop wasting food",
+    "we're on a tight budget, can you sort dinners and a list",
+    "use up what's in the fridge before it goes off",
+    "I need a week of dinners that take 20 minutes on work nights",
+    "one of us is vegetarian, plan the week and the shop",
+    "can you do the meal plan and grocery list again like last week",
+    "help me plan suppers and what to buy at the store"
+  ],
+  "should_not_fire": [
+    "how do I scale this recipe from 4 to 10 people",
+    "what's a good restaurant for our anniversary",
+    "plan the menu for a 40-person birthday party",
+    "what should I get my mother for her birthday",
+    "mum's care home appointment is next week, help me get ready",
+    "I have a doctor's appointment, what should I ask",
+    "is this meal plan healthy for my diabetes",
+    "order my groceries for delivery",
+    "write me a recipe for lasagne",
+    "keep track of dad's medication and refills"
+  ]
+}

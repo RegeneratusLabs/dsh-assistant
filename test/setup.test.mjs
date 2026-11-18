@@ -6,7 +6,7 @@ import path from 'node:path';
 import { buildManifest } from '../lib/paths.mjs';
 import { prepare } from '../lib/setup.mjs';
 
-test('manifest composes base, identity, memory, connectors, browser, voice, the plugin index, the organiser and the personal surface', () => {
+test('manifest composes base, identity, memory, connectors, browser, voice, the plugin index, the organiser, the skill packs and the personal surface', () => {
   const manifest = buildManifest();
   assert.deepEqual(manifest.dsh.profile.bundles, [
     '@deepseek-ai/dsh-base',
@@ -17,6 +17,10 @@ test('manifest composes base, identity, memory, connectors, browser, voice, the 
     '@local/dsh-connectors',
     'dsh-softshell',
     '@local/dsh-organiser',
+    '@local/dsh-skill-pack-daily-ops',
+    '@local/dsh-skill-pack-life-admin',
+    '@local/dsh-skill-pack-home-family',
+    '@local/dsh-skill-pack-research-decisions',
     '@local/dsh-browse',
     '@deepseek-ai/dsh-experimental-voice-input-bundle',
     '@deepseek-ai/dsh-experimental-plugin-market-bundle',
@@ -26,6 +30,9 @@ test('manifest composes base, identity, memory, connectors, browser, voice, the 
   assert.match(manifest.dependencies['@local/dsh-soul'], /^link:.+\/plugins\/soul$/);
   assert.match(manifest.dependencies['dsh-softshell'], /^link:.+\/plugins\/softshell$/);
   assert.match(manifest.dependencies['@local/dsh-organiser'], /^link:.+\/plugins\/organiser$/);
+  for (const cluster of ['daily-ops', 'life-admin', 'home-family', 'research-decisions']) {
+    assert.match(manifest.dependencies[`@local/dsh-skill-pack-${cluster}`], new RegExp(`^link:.+/plugins/skill-pack-${cluster}$`));
+  }
 });
 
 test('voice, the plugin index and auto review are individually optional', () => {

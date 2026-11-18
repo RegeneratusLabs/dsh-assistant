@@ -1,0 +1,30 @@
+{
+  "should_fire": [
+    "which washing machine should I buy, budget around 600",
+    "is the more expensive mattress worth the extra money",
+    "best laptop for a student under 800",
+    "should I buy a new fridge",
+    "I'm about to order a pram, can you sanity check my shortlist",
+    "which robot vacuum is best for pet hair",
+    "worth paying more for the bigger fridge",
+    "help me choose between two e-bikes",
+    "what's the best dishwasher for a small kitchen",
+    "one review says this vacuum has double the suction, can I trust that while choosing",
+    "which car seat fits a small car and lasts the longest",
+    "before I buy, is the mid-range oven good enough or do I need the top one"
+  ],
+  "should_not_fire": [
+    "should I switch insurers this year",
+    "is it true that this blender catches fire",
+    "should I renovate the bathroom",
+    "teach me how to compare mortgage rates",
+    "should I change jobs",
+    "do I even need a car if I work from home",
+    "what does a heat pump actually do",
+    "check whether that recall notice is real",
+    "help me decide whether to move to a cheaper city",
+    "what's a good cheap phone charger",
+    "summarise this article about washing machines",
+    "find the cheapest place to buy this exact kettle"
+  ]
+}

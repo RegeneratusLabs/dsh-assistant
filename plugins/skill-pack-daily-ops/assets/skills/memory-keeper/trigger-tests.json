@@ -1,0 +1,30 @@
+{
+  "should_fire": [
+    "remember that I take my coffee black",
+    "what do you know about me?",
+    "forget I said that about my old job",
+    "update my profile, I go by Sam now",
+    "keep in mind that my sister is called Dana and she calls on Sundays",
+    "make a note that I prefer short answers",
+    "I never take calls before ten, remember that",
+    "read me back my profile",
+    "delete the thing I told you about my landlord",
+    "my partner's birthday is in May, remember that",
+    "what have you got saved about me?",
+    "add this to what you know about me: I can't drive"
+  ],
+  "should_not_fire": [
+    "put this on my list: call the vet",
+    "wrap this up for later, I'll continue tomorrow",
+    "good morning, brief me",
+    "save the key points from this article for the report",
+    "remember to buy milk on the way home",
+    "what tasks do I have open?",
+    "note that the client meeting moved to three",
+    "write down the recipe steps so I can follow them",
+    "forget the last question, start over",
+    "what's on my plate today",
+    "save the supplier quote somewhere so we can compare it later",
+    "write a thank-you note to my neighbour"
+  ]
+}

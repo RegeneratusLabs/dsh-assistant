@@ -1,0 +1,31 @@
+{
+  "should_fire": [
+    "should I move to another city for a job that pays a bit more",
+    "I'm thinking about renovating the kitchen and I don't know where to start",
+    "help me decide whether we can afford a second car",
+    "I'm torn between staying at my job and going back to study",
+    "should I take out a loan to start a small bakery",
+    "we're thinking of moving house but is it the right time",
+    "I can't decide whether to commit to a two year course",
+    "should I switch insurers this year",
+    "is it worth changing jobs for less stress",
+    "help me think through whether to say yes to caring for my dad",
+    "I've got two offers and I keep going back and forth",
+    "should I sell the flat and rent somewhere smaller"
+  ],
+  "should_not_fire": [
+    "which laptop should I buy for college",
+    "should I buy a new fridge",
+    "is it true that you lose most of your body heat through your head",
+    "teach me how mortgages work",
+    "should I have pasta or rice tonight",
+    "check this forwarded message about a bank closure",
+    "best mattress for back pain under 500",
+    "is the more expensive phone worth the extra 200",
+    "what's the weather like tomorrow",
+    "compare these two prams for me",
+    "did that company really recall its batteries",
+    "explain how interest rates affect my savings",
+    "which route should I take to avoid the roadworks"
+  ]
+}

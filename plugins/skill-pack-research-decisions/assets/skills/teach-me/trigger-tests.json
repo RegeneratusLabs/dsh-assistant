@@ -1,0 +1,30 @@
+{
+  "should_fire": [
+    "teach me how to budget properly",
+    "help me learn Spanish from scratch",
+    "I want to understand how interest rates actually work",
+    "explain photography basics like I'll need to use them",
+    "I keep forgetting how to read a profit and loss sheet, teach me",
+    "teach me to cook three meals without following a recipe",
+    "help me learn to use a spreadsheet for my small business",
+    "I want to understand what's on a nutrition label",
+    "where were we on gardening last time, can we carry on",
+    "teach me public speaking step by step",
+    "I want to learn enough statistics to read a study",
+    "can you be my tutor for basic bookkeeping over the next few weeks"
+  ],
+  "should_not_fire": [
+    "what's the boiling point of water",
+    "which mattress should I buy",
+    "is it true that you should wait 30 minutes after eating to swim",
+    "should I move house",
+    "fix this formula in my spreadsheet",
+    "summarise this article about sleep",
+    "drill me on these 20 Spanish words I already know",
+    "write my essay on climate policy",
+    "check whether this online course certificate is legitimate",
+    "what's the best online course for bookkeeping",
+    "how many grams are in an ounce",
+    "add a column that totals these two cells"
+  ]
+}

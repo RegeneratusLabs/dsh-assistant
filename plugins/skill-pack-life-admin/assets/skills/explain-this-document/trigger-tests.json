@@ -1,0 +1,26 @@
+{
+  "should_fire": [
+    "what does this letter mean? it looks official and I don't want to ignore it",
+    "explain this contract to me before I sign it",
+    "is this saying what I think it's saying, that they can put the rent up",
+    "I got this notice from the housing office, am I in trouble",
+    "what's the deadline in this insurance letter",
+    "put this lease into plain English for me",
+    "read this tenancy agreement and tell me what I'm agreeing to",
+    "is this a final warning or just a reminder",
+    "what happens if I just ignore this notice",
+    "this bill has wording I don't understand, what does 'estimated reading' mean here"
+  ],
+  "should_not_fire": [
+    "rewrite this letter I wrote so it sounds more professional",
+    "write a complaint letter to this company about the broken item",
+    "help me fill in this application form, half the questions make no sense",
+    "go through my bills and tell me what to cancel",
+    "translate this document into French word for word",
+    "summarise my meeting notes from this morning",
+    "draft a reply refusing their offer and asking for the full amount",
+    "how much tax do I owe on this income",
+    "is this contract actually enforceable against me in court",
+    "just tell me yes or no, should I sign it"
+  ]
+}

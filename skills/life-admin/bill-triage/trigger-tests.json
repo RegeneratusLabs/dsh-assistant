@@ -1,0 +1,26 @@
+{
+  "should_fire": [
+    "can you go through my bills and tell me what to cancel",
+    "what am I actually subscribed to? I keep getting charged for things I don't remember",
+    "audit my subscriptions, I think I'm paying for the same thing twice",
+    "is this charge right? my streaming bill went up again and nobody told me",
+    "here's a screenshot of my banking app, what are all these monthly charges",
+    "why did my internet bill go from 40 to 55 this month",
+    "help me cancel a gym membership I haven't used since spring",
+    "which of my subscriptions renew before the end of the month",
+    "I want to cut about 50 a month off my regular outgoings, where do I start",
+    "I've got a year of card statements in a PDF, find everything that renews automatically"
+  ],
+  "should_not_fire": [
+    "should I buy the newer model or the cheaper one",
+    "go through my business receipts and categorise them for the tax return",
+    "explain this insurance renewal letter, I don't understand the wording",
+    "they charged me for a service I never received, write them a complaint",
+    "help me fill in the direct debit form for the new supplier",
+    "draft a message to my landlord about the rent going up",
+    "how much did I spend on groceries last month",
+    "write a review of my energy provider so other people see it",
+    "translate this bill into Spanish for my mother",
+    "my card was stolen and someone is using it, what do I do right now"
+  ]
+}

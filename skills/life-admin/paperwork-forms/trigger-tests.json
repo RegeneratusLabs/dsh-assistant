@@ -1,0 +1,26 @@
+{
+  "should_fire": [
+    "help me fill this form in, I don't understand half of it",
+    "this application is confusing, what do they want in section 3",
+    "what does question 7 mean on this form",
+    "I'm applying for a benefit and the form has about forty questions, where do I start",
+    "what documents do I need to attach to this school form",
+    "fill in this permit application with me, I'll give you the details",
+    "walk me through this form so I can fill it in properly",
+    "this renewal form wants the same information as last year, can you help me put it together",
+    "I don't know what 'household income' means on this form",
+    "can you prepare my answers for the rental application so I can copy them in"
+  ],
+  "should_not_fire": [
+    "what does this letter from the tax office mean",
+    "write my personal statement for the university application",
+    "explain this contract I have to sign for the new place",
+    "go through my bills and audit my subscriptions",
+    "they rejected my form, write a complaint about it",
+    "log into the portal and submit the form for me",
+    "am I eligible to claim this benefit at all",
+    "do my taxes for me this year",
+    "check my form for spelling mistakes before I send it",
+    "summarise the guidance notes that came with the form"
+  ]
+}

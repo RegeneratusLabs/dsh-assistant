@@ -1,0 +1,30 @@
+{
+  "should_fire": [
+    "wrap this up for later, I'm done for tonight",
+    "I'll pick this up tomorrow, save where we are",
+    "handoff please",
+    "write a handoff so the next session knows what's going on",
+    "we're nearly out of room in this chat, save the state of the project",
+    "before I close this, leave a note for the next assistant",
+    "summarise this session into a file I can reopen later",
+    "I'm switching to a new chat, catch the next one up on this project",
+    "save our progress and what's still open",
+    "make a pickup doc for this project so a fresh session can continue",
+    "this is getting long, hand it off before it forgets the beginning",
+    "where did we leave off? write it down for next time"
+  ],
+  "should_not_fire": [
+    "add this to my list before I forget",
+    "remember that I hate being called by my full name",
+    "good morning, what's today look like",
+    "what's 15 percent of 80",
+    "summarise this article for me",
+    "hand this document to my colleague, she's expecting it",
+    "what do you know about me?",
+    "mark the invoice task done",
+    "look into the housing market for me",
+    "book a call with the plumber for Tuesday",
+    "forget I said anything about the move",
+    "remind me to water the plants"
+  ]
+}

@@ -14,7 +14,7 @@
     "setup": "node bin/assistant.mjs setup",
     "start": "node bin/assistant.mjs start",
     "doctor": "node bin/assistant.mjs doctor",
-    "test": "node --test test/*.test.mjs && node plugins/memory/selftest.mjs && node plugins/learn/selftest.mjs && node plugins/soul/selftest.mjs && node plugins/connectors/selftest.mjs && node plugins/browse/selftest.mjs && node plugins/organiser/selftest.mjs && node plugins/softshell/selftest.mjs && node plugins/studio/selftest.mjs",
+    "test": "node --test test/*.test.mjs && node plugins/memory/selftest.mjs && node plugins/learn/selftest.mjs && node plugins/soul/selftest.mjs && node plugins/connectors/selftest.mjs && node plugins/browse/selftest.mjs && node plugins/organiser/selftest.mjs && node plugins/softshell/selftest.mjs && node plugins/studio/selftest.mjs && node plugins/skill-pack-daily-ops/selftest.mjs && node plugins/skill-pack-life-admin/selftest.mjs && node plugins/skill-pack-home-family/selftest.mjs && node plugins/skill-pack-research-decisions/selftest.mjs",
     "test:live": "HINDSIGHT_LIVE=1 node plugins/memory/livetest.mjs"
   },
   "license": "MIT"

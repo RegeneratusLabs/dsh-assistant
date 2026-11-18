@@ -1,0 +1,26 @@
+{
+  "should_fire": [
+    "mum's appointments are piling up, I need one place for them",
+    "care home questions to ask on the phone",
+    "helping dad manage his medication, I keep losing track",
+    "care coordination between me and my brother",
+    "what should I ask the pharmacist about her pills",
+    "I need a summary of dad's care to send my sister",
+    "keep a log of what the carers tell me",
+    "family meeting about my mother's care next week",
+    "the care home called and I forgot what they said",
+    "how do I keep everyone updated on mum without repeating myself"
+  ],
+  "should_not_fire": [
+    "I have a doctor's appointment tomorrow, help me prep",
+    "plan meals for my dad while he recovers",
+    "what should I get mum for her birthday",
+    "which care home near me is best",
+    "is it safe to stop this medication",
+    "explain what dementia does to the brain",
+    "help me apply for financial help for caring for my dad",
+    "my own therapy appointment next week",
+    "write a birthday card for my mother",
+    "book a dentist appointment for me"
+  ]
+}

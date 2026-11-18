@@ -1,0 +1,30 @@
+{
+  "should_fire": [
+    "is it true that you should wait 30 minutes after eating before swimming",
+    "this message about a new tax rule sounds off, can you check it",
+    "did the council really approve that development",
+    "someone forwarded me a warning about bank transfers, is it real",
+    "can you fact-check this screenshot",
+    "I read that this supplement cures arthritis, is that true",
+    "did that company really recall its batteries",
+    "my aunt says a new law bans cash payments, is that true",
+    "check this article before I share it",
+    "is this study about coffee real",
+    "was that quote actually said by the person in the picture",
+    "is the claim about the local school closing genuine"
+  ],
+  "should_not_fire": [
+    "which air fryer should I buy",
+    "is this laptop's battery life claim accurate, I'm comparing two models",
+    "what do studies say about exercise and sleep",
+    "teach me how to spot misinformation",
+    "should I switch energy providers",
+    "will house prices fall next year",
+    "help me decide whether to move abroad",
+    "explain how inflation works",
+    "what's the best mattress for back pain",
+    "summarise what the article says about salt",
+    "how do I report a scam message to the authorities",
+    "write a polite reply to this complaint about my business"
+  ]
+}
