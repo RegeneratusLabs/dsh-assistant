@@ -1,0 +1,10 @@
+# The studio's bundle patch: reuse DSH's own filesystem skill provider, rooted at
+# this package's `skill/` directory, so SKILL.md is discovered as the `studio`
+# skill. `baseUrl` is the profile's patch file; resolving our package there keeps
+# the path correct whether the package is linked or installed.
+- insert:
+    - id: dsh-studio-skill
+      name: '@deepseek-ai/dsh-skill-filesystem'
+      config:
+        providerName: studio
+        bundledSkillDir: !!js process.getBuiltinModule('node:path').join(process.getBuiltinModule('node:path').dirname(process.getBuiltinModule('node:module').createRequire(baseUrl).resolve('@local/dsh-studio/package.json')), 'skill')

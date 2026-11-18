@@ -1,0 +1,25 @@
+{
+  "name": "@local/dsh-studio",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The studio: an English-first design skill for the personal assistant — HTML prototypes, decks, motion, data visuals and critique, with PDF/PPTX export.",
+  "type": "module",
+  "exports": {
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "cordis.patch.yml",
+    "skill"
+  ],
+  "dsh": {
+    "manifestVersion": 1,
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "dependencies": {
+    "pdf-lib": "1.17.1",
+    "playwright": "1.65.0",
+    "pptxgenjs": "4.0.1"
+  }
+}

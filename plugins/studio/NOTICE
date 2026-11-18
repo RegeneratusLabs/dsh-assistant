@@ -1,0 +1,11 @@
+# Fork notice
+
+`@local/dsh-studio` (the studio) is a fork of **huashu-design 3.3.0**, © 花叔
+(Alchain), https://github.com/alchaincyf/huashu-design, released under the MIT
+License. The upstream LICENSE file is kept verbatim at `LICENSE`.
+
+The design method, reference library, scripts, specimens and audio in `skill/`
+originate upstream. This fork renames the plugin to `studio`, translates the
+agent-facing material into English, renames the local state directory, and
+repackages the skill as a DeepSeek Harness plugin. Those modifications are
+© 2026 Regeneratus Labs, also under the MIT License.
