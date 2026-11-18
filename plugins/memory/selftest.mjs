@@ -8,14 +8,14 @@
  * Run: node plugins/memory/selftest.mjs
  */
 
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
 const home = mkdtempSync(path.join(os.tmpdir(), 'dsh-memory-selftest-'));
 process.env.DSH_HOME = home;
 
-const { apply, probeHealth, readProfile, writeProfile, renderProfile } = await import('./index.js');
+const { apply, probeHealth, readProfile, writeProfile, renderProfile, recallQueryFrom, renderRecalledFacts } = await import('./index.js');
 
 let failures = 0;
 /** Assert one condition, recording the outcome. */
@@ -211,6 +211,102 @@ check('overflow does not write', readProfile(tight).profile.user.length === 1);
 globalThis.fetch = async () => ({ ok: false, status: 500, text: async () => 'boom' });
 const degraded = await recall.execute({ query: 'anything' });
 check('recall fails open', degraded.message.toLowerCase().includes('failed'), degraded.message);
+
+// ── stored facts reach the turn without a tool call ─────────────────────────
+// The defect this covers: 24 stored facts, `lastRecallCount: 0`, because the
+// model never called `memory_recall`. The step itself must carry the facts.
+const injectHome = mkdtempSync(path.join(os.tmpdir(), 'dsh-inject-selftest-'));
+const injectProfile = path.join(injectHome, 'memory', 'profile.json');
+writeProfile(injectProfile, { user: ['Based in a coastal town.'], agent: [] });
+const preStep = [];
+const injectTools = [];
+const injectCtx = {
+  systemPrompt: { getSectionOrder: () => 0, section: () => () => {} },
+  effect: (fn) => fn(),
+  tools: { register: (tool) => injectTools.push(tool) },
+  on: (event, handler) => {
+    if (event === 'agent/pre-step') preStep.push(handler);
+    return () => {};
+  },
+};
+apply(injectCtx, {
+  bankId: 'inject-bank',
+  apiUrl: 'http://127.0.0.1:9177',
+  allowBanks: 'inject-bank',
+  profilePath: injectProfile,
+  probe: false,
+});
+check('one per-turn recall listener is installed by default', preStep.length === 1, String(preStep.length));
+
+const recallBodies = [];
+globalThis.fetch = async (url, init) => {
+  recallBodies.push({ url: String(url), body: String(init?.body ?? '') });
+  return {
+    ok: true,
+    status: 200,
+    text: async () =>
+      JSON.stringify({
+        results: [
+          { text: 'The user grows apples near Testville.', scores: { final: 0.9 } },
+          { text: 'Prefers suppliers within an hour.', scores: { final: 0.8 } },
+          { text: 'Unrelated garden note.', scores: { final: 0.01 } },
+        ],
+      }),
+  };
+};
+
+/** Run the listener the way the agent loop runs its pre-step waterfall. */
+const step = (payload) => preStep.at(-1)(payload, async () => ({ kind: 'enter', messages: payload.messages }));
+const agent = { id: 'agent-1', session: { id: 'session-inject', header: {} } };
+const humanMessage = (id, text) => ({ id, role: 'user', content: [{ type: 'text', text }], source: { kind: 'user' } });
+const injectedOf = (result) => result.messages.filter((message) => message.source?.kind === 'dsh-memory');
+
+const firstStep = await step({ agent, turn: 1, messages: [humanMessage('m1', 'What do I grow?')] });
+const injected = injectedOf(firstStep);
+check('a human turn carries recalled facts in the same step', injected.length === 1, JSON.stringify(firstStep.messages.map((m) => m.source?.kind)));
+check('the injected block carries the kept fact', injected[0]?.content?.[0]?.text.includes('grows apples'), injected[0]?.content?.[0]?.text);
+check('the recall query is the human text', recallBodies.at(-1)?.body.includes('What do I grow?'), recallBodies.at(-1)?.body);
+check('the relevance bar still drops weak matches', !injected[0].content[0].text.includes('Unrelated garden note'), injected[0].content[0].text);
+check(
+  'the injected block is framed as a reminder, not as the user speaking',
+  injected[0].content[0].text.startsWith('<system-reminder>') && injected[0].source.kind === 'dsh-memory',
+  injected[0].content[0].text.slice(0, 40),
+);
+const injectStatus = JSON.parse(readFileSync(path.join(injectHome, 'memory', 'status.json'), 'utf8'));
+check(
+  'status makes the recall and the injection observable',
+  injectStatus.lastRecallCount === 2 && injectStatus.lastInjectCount === 2 && typeof injectStatus.lastInjectAt === 'string',
+  JSON.stringify(injectStatus),
+);
+
+const callsAfterFirst = recallBodies.length;
+await step({ agent, turn: 1, messages: [humanMessage('m1', 'What do I grow?')] });
+check('a turn costs at most one recall', recallBodies.length === callsAfterFirst, `${recallBodies.length} vs ${callsAfterFirst}`);
+const repeat = await step({ agent, turn: 2, messages: [humanMessage('m2', 'And what do I grow?')] });
+check('an already injected fact is not repeated', injectedOf(repeat).length === 0, JSON.stringify(repeat.messages.map((m) => m.source?.kind)));
+const anonymous = await step({ agent, turn: 3, messages: [{ id: 'm3', role: 'user', content: [{ type: 'text', text: 'reminder' }], source: { kind: 'system-reminder' } }] });
+check('an injected reminder is not a human query', injectedOf(anonymous).length === 0);
+
+globalThis.fetch = async () => {
+  throw new Error('connect ECONNREFUSED');
+};
+const downStep = await step({ agent, turn: 4, messages: [humanMessage('m4', 'Still there?')] });
+check('a dead Hindsight never fails the turn', downStep.kind === 'enter' && injectedOf(downStep).length === 0);
+check(
+  'a background recall miss records no prompt alert',
+  !existsSync(path.join(injectHome, 'memory', 'alerts.json')),
+  'alerts.json exists',
+);
+
+const offCtx = { systemPrompt: { getSectionOrder: () => 0, section: () => () => {} }, effect: (fn) => fn(), tools: { register: () => {} }, on: () => preStep.push(() => {}) };
+apply(offCtx, { bankId: 'inject-bank', allowBanks: 'inject-bank', apiUrl: 'http://127.0.0.1:9177', profilePath: injectProfile, probe: false, recallInject: false });
+check('the row flag turns automatic recall off', preStep.length === 1, String(preStep.length));
+
+check('the query helper ignores non-human input', recallQueryFrom([{ source: { kind: 'dsh-memory' }, content: [{ type: 'text', text: 'recalled' }] }]) === '');
+check('the query helper takes the last human text', recallQueryFrom([humanMessage('a', 'first'), humanMessage('b', 'second')]) === 'second');
+check('the renderer bounds an oversized block', renderRecalledFacts(Array.from({ length: 5 }, () => ({ text: 'x'.repeat(400) }))).length < 1200);
+check('the renderer is empty without facts', renderRecalledFacts([]) === '');
+rmSync(injectHome, { recursive: true, force: true });
 
 // ── semantic memory is opt-in (no Hindsight by default) ─────────────────────
 const localFile = path.join(home, 'memory', 'local.json');

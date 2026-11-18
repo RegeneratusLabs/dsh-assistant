@@ -61,6 +61,8 @@ window.__ModuleLoader__.load({
       'line.forget.one': 'forgot 1',
       'line.forget.other': 'forgot {count}',
       'line.skill': 'skill {name}',
+      'line.renamed': 'saved as a new name — {name} was taken',
+      'line.failed': 'review failed, nothing learned',
     };
     const COPY_ZH = {
       'line.memory.one': '记下 1 条记忆',
@@ -68,6 +70,8 @@ window.__ModuleLoader__.load({
       'line.forget.one': '移除 1 条',
       'line.forget.other': '移除 {count} 条',
       'line.skill': '技能 {name}',
+      'line.renamed': '改名为 {name}（原名已被占用）',
+      'line.failed': '复盘失败，未记录',
     };
 
     /**
@@ -86,8 +90,10 @@ window.__ModuleLoader__.load({
       const memory = Number.isSafeInteger(data.memory) && data.memory > 0 ? data.memory : 0;
       const forget = Number.isSafeInteger(data.forget) && data.forget > 0 ? data.forget : 0;
       const skill = typeof data.skill === 'string' && data.skill !== '' ? data.skill : '';
-      if (memory === 0 && forget === 0 && skill === '') return '';
-      return JSON.stringify({ m: memory, f: forget, s: skill });
+      const renamed = typeof data.renamed === 'string' ? data.renamed : '';
+      const failure = typeof data.failure === 'string' && data.failure !== '' ? data.failure : '';
+      if (memory === 0 && forget === 0 && skill === '' && failure === '') return '';
+      return JSON.stringify({ m: memory, f: forget, s: skill, r: renamed, e: failure });
     }
 
     /** Index one event window by turn; a later record for the same turn wins. */
@@ -158,6 +164,12 @@ window.__ModuleLoader__.load({
       }
       if (typeof data?.s === 'string' && data.s !== '') {
         parts.push({ kind: 'skill', text: t('line.skill', { name: data.s }) });
+      }
+      if (typeof data?.r === 'string' && data.r !== '') {
+        parts.push({ kind: 'renamed', text: t('line.renamed', { name: data.r }) });
+      }
+      if (typeof data?.e === 'string' && data.e !== '') {
+        parts.push({ kind: 'failure', text: t('line.failed') });
       }
       return parts;
     }

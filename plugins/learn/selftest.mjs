@@ -9,7 +9,7 @@
  * Run: node plugins/learn/selftest.mjs
  */
 
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -31,6 +31,11 @@ const {
   countSkills,
   learnedNotice,
   recordLearned,
+  isLearnAuthored,
+  freeSkillName,
+  hasLearnMarker,
+  composeSkillMarkdown,
+  reducedPrompt,
   NOTICE_RECORD,
 } = await import('./index.js');
 
@@ -114,6 +119,116 @@ check('skill count sees the directory', countSkills(skillsDir) === 1);
 const second = writeSkill({ dir: skillsDir, name: 'supplier-research', description: 'How to research local suppliers.', body: '# Steps\n\n1. List candidates.\n2. Call each.\n3. Compare.' });
 check('replacing a skill keeps a backup', second.backup !== null && existsSync(second.backup));
 check('history holds one version', readdirSync(path.join(skillsDir, '.history', 'supplier-research')).length === 1);
+
+// ── a foreign same-name skill is never overwritten ──────────────────────────
+// The defect: writeSkill replaced any existing directory, so a curated or
+// pack-provided skill under the same name was silently destroyed.
+const foreignDir = path.join(home, 'skills-foreign');
+const auditPath = path.join(home, 'learning', 'audit.jsonl');
+mkdirSync(path.join(foreignDir, 'supplier-research'), { recursive: true });
+writeFileSync(
+  path.join(foreignDir, 'supplier-research', 'SKILL.md'),
+  '---\nname: supplier-research\ndescription: A skill nobody in learn wrote, with real fixtures.\n---\n\n# Mine\n\n1. Hand-written procedure.\n',
+);
+check('a skill without the marker is not learn-authored', isLearnAuthored({ dir: foreignDir, name: 'supplier-research', auditPath }) === false);
+check('a learn marker is detected in frontmatter', hasLearnMarker(readFileSync(first.file, 'utf8')) === true);
+check('a frontmatter without the marker is not ours', hasLearnMarker('---\nname: x\ndescription: y\n---\n\nbody') === false);
+check('the free name of an unoccupied skill is itself', freeSkillName(foreignDir, 'never-used') === 'never-used');
+// DSH discovers `<root>/<name>.md` as well as `<root>/<name>/SKILL.md`, so a
+// flat markdown skill occupies the name too.
+writeFileSync(path.join(foreignDir, 'flat-note.md'), '---\nname: flat-note\ndescription: A flat skill a user wrote by hand.\n---\n\nbody\n');
+const flatWrite = writeSkill({ dir: foreignDir, name: 'flat-note', description: 'How to keep flat notes.', body: '1. Write it down.\n2. Read it back.' });
+check('a flat markdown skill also blocks the name', flatWrite.name === 'flat-note-2', String(flatWrite.name));
+check('the flat skill file is untouched', readFileSync(path.join(foreignDir, 'flat-note.md'), 'utf8').includes('A flat skill a user wrote by hand'));
+
+const renamed = writeSkill({
+  dir: foreignDir,
+  name: 'supplier-research',
+  description: 'How to research local suppliers quickly.',
+  body: '1. List candidates.\n2. Check delivery radius.\n3. Compare stock.\n4. Summarise.',
+  auditPath,
+});
+check('a foreign collision is written under the first free suffix', renamed.name === 'supplier-research-2', String(renamed.name));
+check('the rename names the skill that was already there', renamed.renamedFrom === 'supplier-research', String(renamed.renamedFrom));
+check(
+  'the foreign skill file is untouched',
+  readFileSync(path.join(foreignDir, 'supplier-research', 'SKILL.md'), 'utf8').includes('1. Hand-written procedure.'),
+);
+check('the renamed skill exists under its own directory', existsSync(path.join(foreignDir, 'supplier-research-2', 'SKILL.md')));
+const thirdTry = writeSkill({
+  dir: foreignDir,
+  name: 'supplier-research',
+  description: 'How to research local suppliers quickly.',
+  body: '1. List candidates.\n2. Check delivery radius.\n3. Compare stock.\n4. Summarise.',
+  auditPath,
+});
+check('the suffix keeps advancing while names are taken', thirdTry.name === 'supplier-research-3', String(thirdTry.name));
+const curated = writeSkill({
+  dir: foreignDir,
+  name: 'supplier-research-2',
+  description: 'How to research local suppliers quickly.',
+  body: '1. List candidates.\n2. Check delivery radius.\n3. Compare stock.\n4. Summarise.\n5. Reply.',
+  auditPath,
+});
+check(
+  'a learn-authored skill is still replaced (the curation loop)',
+  curated.name === 'supplier-research-2' && curated.renamedFrom === null && curated.backup !== null,
+  JSON.stringify(curated),
+);
+
+// ── learned skills use the repo's house shape ───────────────────────────────
+const house = composeSkillMarkdown({
+  name: 'supplier-research',
+  description: 'How to research local suppliers.',
+  when: 'The user asks about a new supplier in the area.',
+  body: '1. List candidates.\n2. Call each.',
+});
+check(
+  'house frontmatter carries name, description and provenance',
+  house.startsWith('---\nname: supplier-research\ndescription: How to research local suppliers.\nlearned-by: dsh-learn\n---\n'),
+  house.slice(0, 160),
+);
+check(
+  'the body opens with a house H1 and a When to use section',
+  /^---\n(?:.*\n)*?---\n\n# Supplier research\n\n## When to use\n\nThe user asks about a new supplier in the area\.\n/.test(house),
+  house.slice(0, 260),
+);
+check(
+  'without a when line the description carries the trigger',
+  composeSkillMarkdown({ name: 'x', description: 'A description.', when: '', body: 'procedure' }).includes('## When to use\n\nA description.'),
+);
+check(
+  'a body with its own When to use is not duplicated',
+  (composeSkillMarkdown({ name: 'x', description: 'd', when: 'w', body: '## When to use\n\nmine' }).match(/## When to use/gi) ?? []).length === 1,
+);
+check(
+  'a body that already opens with an H1 keeps its own title',
+  (composeSkillMarkdown({ name: 'x', description: 'd', when: 'w', body: '# Mine\n\nstep' }).match(/^# /gm) ?? []).length === 1,
+);
+check(
+  'every frontmatter line is a single-line field the provider can read',
+  house
+    .slice(0, house.indexOf('\n---', 4))
+    .split('\n')
+    .slice(1)
+    .every((line) => /^[A-Za-z][\w-]*:\s*\S/u.test(line)),
+  house.slice(0, house.indexOf('\n---', 4)),
+);
+const triggers = JSON.parse(readFileSync(path.join(skillsDir, 'supplier-research', 'trigger-tests.json'), 'utf8'));
+check(
+  'a learned skill ships a trigger-tests stub',
+  Array.isArray(triggers.should_fire) &&
+    triggers.should_fire.length === 0 &&
+    Array.isArray(triggers.should_not_fire) &&
+    triggers.should_not_fire.length === 0,
+  JSON.stringify(triggers),
+);
+const overlongWhen = validateReview(
+  { memory: [{ target: 'agent', text: 'A supported fact.' }], skill: { name: 'x', description: 'A skill description.', when: 'w'.repeat(400), body: 'x'.repeat(80) } },
+  {},
+);
+check('an over-long when falls back instead of failing the skill', overlongWhen.skill !== null && overlongWhen.skill.when === '');
+check('a valid when is kept for the trigger section', validateReview({ memory: [{ target: 'agent', text: 'A fact.' }], skill: { name: 'x', description: 'A skill description.', when: 'When asked.', body: 'x'.repeat(80) } }, {}).skill.when === 'When asked.');
 
 // ── happy path: one review, one memory write, no network ───────────────────
 resetState();
@@ -215,12 +330,72 @@ check(
 
 resetState();
 const cutCalls = [];
+const cutRecords = [];
 const cutCtx = makeCtx(replyingWith('{"memory":[{"target":"user","text":"This object was cut', cutCalls, 'max-tokens'));
-apply(cutCtx.ctx, { minUserChars: 10, minIntervalMs: 0, maxPerHour: 100 });
+apply(cutCtx.ctx, { minUserChars: 10, minIntervalMs: 0, maxPerHour: 100, appendRecord: (_session, _type, data) => cutRecords.push(data) });
 turn(cutCtx.emit, { id: 'session-cut-b', header: { isSeeded: false } }, 'From now on write shorter replies.', 1);
 await whenIdle();
 const auditAfterCut = readFileSync(path.join(home, 'learning', 'audit.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line));
 check('a cut-off object is audited as truncated', auditAfterCut.at(-1).ok === false && /truncated review/.test(auditAfterCut.at(-1).error), JSON.stringify(auditAfterCut.at(-1)));
+check('a cut-off review is retried before it is dropped', cutCalls.length === 3, String(cutCalls.length));
+check('the retry never raises the token ceiling', cutCalls.every((call) => call.maxTokens === cutCalls[0].maxTokens), JSON.stringify(cutCalls.map((call) => call.maxTokens)));
+check('the retry drops the existing-skills list', !cutCalls[1].messages[0].content[0].text.includes('<existing_skills'), cutCalls[1].messages[0].content[0].text.slice(0, 120));
+check(
+  'the last resort asks for one memory decision and no skill',
+  /no skill/i.test(cutCalls[2].system) && cutCalls[2].messages[0].content[0].text.length < cutCalls[0].messages[0].content[0].text.length,
+);
+check('a lost review is no longer silent: the notice reports it', cutRecords.some((data) => data.failure === 'truncated'), JSON.stringify(cutRecords));
+
+// ── the retry recovers a review the ceiling first cut off ───────────────────
+resetState();
+const retryCalls = [];
+const retryRecords = [];
+const retryCtx = makeCtx((options) => {
+  retryCalls.push(options);
+  const text =
+    retryCalls.length === 1
+      ? '{"memory":[{"target":"user","text":"This object was cut'
+      : JSON.stringify({ memory: [{ target: 'user', text: 'Wants replies in the short format.' }], forget: [], skill: null });
+  return (async function* () {
+    yield { type: 'text-delta', index: 0, text };
+    yield { type: 'finish', reason: { kind: retryCalls.length === 1 ? 'max-tokens' : 'stop' } };
+  })();
+});
+apply(retryCtx.ctx, { minUserChars: 10, minIntervalMs: 0, maxPerHour: 100, appendRecord: (_session, _type, data) => retryRecords.push(data) });
+turn(retryCtx.emit, { id: 'session-retry', header: { isSeeded: false } }, 'From now on keep answers short.', 1);
+await whenIdle();
+check('one retry is enough when it parses', retryCalls.length === 2, String(retryCalls.length));
+check(
+  'the retry result reaches the profile',
+  JSON.parse(readFileSync(profileFile, 'utf8')).user.some((entry) => entry.includes('short format')),
+  readFileSync(profileFile, 'utf8'),
+);
+check('a recovered review reports a normal notice', retryRecords.length === 1 && retryRecords[0].failure === undefined, JSON.stringify(retryRecords));
+
+// ── the memory-only fallback still saves the facts ─────────────────────────
+resetState();
+const onlyCalls = [];
+const onlyCtx = makeCtx((options) => {
+  onlyCalls.push(options);
+  const text =
+    onlyCalls.length === 3 ? '{"memory":[{"target":"agent","text":"Supplier calls happen on Tuesdays."}]}' : '{"memory":[{"target":"agent","text":"cut';
+  return (async function* () {
+    yield { type: 'text-delta', index: 0, text };
+    yield { type: 'finish', reason: { kind: onlyCalls.length === 3 ? 'stop' : 'max-tokens' } };
+  })();
+});
+apply(onlyCtx.ctx, { minUserChars: 10, minIntervalMs: 0, maxPerHour: 100 });
+turn(onlyCtx.emit, { id: 'session-only', header: { isSeeded: false } }, 'From now on call suppliers on Tuesdays.', 1);
+await whenIdle();
+check('the memory-only fallback is a third call', onlyCalls.length === 3, String(onlyCalls.length));
+check(
+  'the memory half is still applied',
+  JSON.parse(readFileSync(profileFile, 'utf8')).agent.some((entry) => entry.includes('Tuesdays')),
+  readFileSync(profileFile, 'utf8'),
+);
+const reducedText = reducedPrompt({ userTexts: ['x'.repeat(4000)], assistantTexts: [], tools: [] }, { maxInputChars: 8000, maxMemory: 3 });
+check('the reduced prompt is capped harder than the full one', reducedText.length <= 3000, String(reducedText.length));
+check('the reduced prompt carries no skills list', !reducedText.includes('<existing_skills'));
 
 // ── rate limit: the second turn in the window is not reviewed ──────────────
 resetState();
@@ -259,6 +434,54 @@ check('skill has the description', readFileSync(skillFile, 'utf8').includes('des
 turn(skillCtx.emit, session, 'From now on research suppliers in four steps.', 2);
 await whenIdle();
 check('skill update kept a backup', readdirSync(path.join(home, 'skills', '.history', 'supplier-research')).length >= 1);
+
+// ── a review that collides with a foreign skill reports the rename ─────────
+resetState();
+const renameCalls = [];
+const renameRecords = [];
+const renameCtx = makeCtx(
+  replyingWith(
+    {
+      memory: [{ target: 'agent', text: 'Supplier research follows a fixed four-step outline.' }],
+      forget: [],
+      skill: {
+        name: 'supplier-research',
+        description: 'How to research local suppliers quickly.',
+        when: 'The user asks about a new supplier.',
+        body: '1. List candidates.\n2. Check delivery radius.\n3. Compare stock.\n4. Summarise.',
+      },
+    },
+    renameCalls,
+  ),
+);
+apply(renameCtx.ctx, {
+  minUserChars: 10,
+  minIntervalMs: 0,
+  maxPerHour: 100,
+  maxSkillWritesPerHour: 10,
+  maxSkillWritesPerDay: 10,
+  skillsDir: foreignDir,
+  appendRecord: (_session, _type, data) => renameRecords.push(data),
+});
+turn(renameCtx.emit, { id: 'session-rename', header: { isSeeded: false } }, 'From now on research suppliers in four steps.', 1);
+await whenIdle();
+const renameNotice = renameRecords.at(-1);
+check(
+  'a colliding review names the suffixed skill in the notice',
+  renameNotice?.skill === 'supplier-research-4',
+  JSON.stringify(renameNotice),
+);
+check('the notice reports what name was asked for', renameNotice?.renamed === 'supplier-research', JSON.stringify(renameNotice));
+const renameAudit = readFileSync(path.join(home, 'learning', 'audit.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+check(
+  'the audit records both names',
+  renameAudit.at(-1).skill.renamedFrom === 'supplier-research' && renameAudit.at(-1).skill.name === 'supplier-research-4',
+  JSON.stringify(renameAudit.at(-1).skill),
+);
+check(
+  'the foreign skill still holds its own procedure',
+  readFileSync(path.join(foreignDir, 'supplier-research', 'SKILL.md'), 'utf8').includes('1. Hand-written procedure.'),
+);
 
 // ── invalid model reply writes nothing ──────────────────────────────────────
 resetState();
@@ -368,6 +591,30 @@ check(
   'singular counts use the singular copy',
   single[0].text === 'line.memory.one:1' && single[1].text === 'line.forget.one:1',
   JSON.stringify(single),
+);
+// The renamed and failed notices are the two new dim-line shapes: a collision
+// must say which name was taken, and a lost review must stop being invisible.
+check(
+  'a renamed skill record draws the rename',
+  logic.payloadKey({ v: 1, turn: 3, memory: 0, forget: 0, skill: 'x-2', renamed: 'x' }) !== '',
+);
+check(
+  'a failed review record draws a failure line',
+  logic.payloadKey({ v: 1, turn: 3, memory: 0, forget: 0, skill: null, failure: 'truncated' }) !== '',
+);
+const renamedParts = logic.formatNotice(JSON.stringify({ m: 0, f: 0, s: 'x-2', r: 'x', e: '' }), translate);
+check(
+  'the rename line follows the skill name',
+  renamedParts.map((part) => part.kind).join(',') === 'skill,renamed' && renamedParts[1].text === 'line.renamed:x',
+  JSON.stringify(renamedParts),
+);
+const failureParts = logic.formatNotice(JSON.stringify({ m: 0, f: 0, s: '', r: '', e: 'truncated' }), translate);
+check('the failure line uses its own copy', failureParts.length === 1 && failureParts[0].text === 'line.failed:', JSON.stringify(failureParts));
+check(
+  'learnedNotice reports a rename and a failure',
+  JSON.stringify(learnedNotice(2, { memory: [], forget: 0, skill: { name: 'x-2', renamedFrom: 'x' }, failure: 'truncated' })) ===
+    JSON.stringify({ v: 1, turn: 2, memory: 0, forget: 0, skill: 'x-2', renamed: 'x', failure: 'truncated' }),
+  JSON.stringify(learnedNotice(2, { memory: [], forget: 0, skill: { name: 'x-2', renamedFrom: 'x' }, failure: 'truncated' })),
 );
 
 /** A fake client context, shaped like the Web one for this plugin. */

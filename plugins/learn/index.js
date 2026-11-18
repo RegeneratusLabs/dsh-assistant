@@ -223,7 +223,7 @@ export function buildDigest(turn, limits = {}) {
   const user = (turn.userTexts ?? []).slice(-2).join('\n---\n').slice(0, limits.userChars ?? 2500);
   const assistant = (turn.assistantTexts ?? []).filter(Boolean).at(-1)?.slice(0, limits.assistantChars ?? 2500) ?? '';
   const tools = (turn.tools ?? [])
-    .slice(-20)
+    .slice(-(limits.tools ?? 20))
     .map((tool) => `${tool.name}${tool.error ? ' (error)' : ''}`)
     .join(', ');
   return [
@@ -297,6 +297,7 @@ export function validateReview(parsed, options = {}) {
   if (parsed.skill && typeof parsed.skill === 'object') {
     const name = normalize(parsed.skill.name);
     const description = normalize(parsed.skill.description);
+    const when = normalize(parsed.skill.when);
     const body = String(parsed.skill.body ?? '').trim();
     if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name) || name.length > 64) {
       result.errors.push('skill name is not kebab-case');
@@ -314,7 +315,9 @@ export function validateReview(parsed, options = {}) {
       // A skill without any supporting fact is usually a hallucinated procedure.
       result.errors.push('skill without a supporting memory');
     } else {
-      result.skill = { name, description, body };
+      // An over-long `when` costs the skill its trigger line, not the skill: the
+      // description is the fallback the composer uses.
+      result.skill = { name, description, when: when.length > 0 && when.length <= 200 ? when : '', body };
     }
   }
   return result;
@@ -330,17 +333,162 @@ export function countSkills(dir) {
 }
 
 /**
- * Write one skill, keeping a bounded history of the version it replaced.
- * @param options - `{dir, name, description, body, keep}`.
- * @returns `{file, backup}`.
+ * The frontmatter line that marks a skill this plugin wrote.
+ *
+ * DSH discovers skills exactly one directory level below `$DSH_HOME/skills`
+ * (`<root>/<name>/SKILL.md` or `<root>/<name>.md`), so a `learned/` subdirectory
+ * would never be read; learned skills therefore stay at the top level and carry
+ * their provenance inside the file itself. A skill without this marker was not
+ * written by learn, and learn must not overwrite it.
  */
-export function writeSkill({ dir, name, description, body, keep = 5 }) {
-  const skillDir = path.join(dir, name);
+export const LEARN_MARKER = 'learned-by: dsh-learn';
+
+/**
+ * The house skill shape both the curated tree and learned skills use: a
+ * `trigger-tests.json` stub flags a draft that still needs real fixtures.
+ */
+export const TRIGGER_TESTS_STUB = { should_fire: [], should_not_fire: [] };
+
+/**
+ * Does this skill file's frontmatter carry learn's provenance marker?
+ * @param text - the skill file contents.
+ * @returns whether learn wrote it.
+ */
+export function hasLearnMarker(text) {
+  const raw = String(text ?? '');
+  if (!raw.startsWith('---')) return false;
+  const end = raw.indexOf('\n---', 3);
+  const frontmatter = end < 0 ? '' : raw.slice(0, end);
+  return frontmatter.split('\n').some((line) => line.trim() === LEARN_MARKER);
+}
+
+/**
+ * Does the audit log record a skill write by learn under this directory?
+ *
+ * The marker in the file is the primary provenance signal; the audit log is the
+ * fallback for skills learn wrote before the marker existed. Both rotated and
+ * live audit files are read, because a rotation must not turn a learned skill
+ * into a foreign one and trigger a spurious rename.
+ * @param auditPath - the audit JSONL path.
+ * @param dir - the skills directory.
+ * @param name - the skill name.
+ * @returns whether learn wrote that skill.
+ */
+export function auditShowsSkill(auditPath, dir, name) {
+  if (!auditPath) return false;
+  const root = path.resolve(dir);
+  for (const file of [auditPath, `${auditPath}.1`]) {
+    let text;
+    try {
+      text = readFileSync(file, 'utf8');
+    } catch {
+      continue;
+    }
+    for (const line of text.split('\n')) {
+      if (line.trim().length === 0) continue;
+      let entry;
+      try {
+        entry = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (entry?.ok !== true || entry.skill?.name !== name) continue;
+      if (typeof entry.skill.file !== 'string') continue;
+      if (path.resolve(entry.skill.file).startsWith(`${root}${path.sep}`)) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Is the existing skill at `<dir>/<name>` one learn may replace?
+ * @param options - `{dir, name, auditPath}`.
+ * @returns true only for a skill learn authored.
+ */
+export function isLearnAuthored({ dir, name, auditPath }) {
+  let existing;
+  try {
+    existing = readFileSync(path.join(dir, name, 'SKILL.md'), 'utf8');
+  } catch {
+    return false;
+  }
+  return hasLearnMarker(existing) || auditShowsSkill(auditPath, dir, name);
+}
+
+/**
+ * Whether anything already answers to this name in a skills root.
+ *
+ * DSH discovers both `<root>/<name>/SKILL.md` and a flat `<root>/<name>.md`, so
+ * a name is taken by either shape.
+ * @param dir - the skills root.
+ * @param name - the skill name.
+ * @returns whether the name is occupied.
+ */
+function skillNameTaken(dir, name) {
+  return existsSync(path.join(dir, name)) || existsSync(path.join(dir, `${name}.md`));
+}
+
+/**
+ * The name to write under: unchanged when free, else the first `<name>-N`.
+ * @param dir - the skills directory.
+ * @param name - the proposed skill name.
+ * @param limit - how many suffixes to try.
+ * @returns the free name, or null when every suffix is taken.
+ */
+export function freeSkillName(dir, name, limit = 100) {
+  if (!skillNameTaken(dir, name)) return name;
+  for (let suffix = 2; suffix <= limit; suffix += 1) {
+    const candidate = `${name}-${suffix}`;
+    if (!skillNameTaken(dir, candidate)) return candidate;
+  }
+  return null;
+}
+
+/**
+ * Render one skill file in the repo's house shape.
+ *
+ * A curated skill is frontmatter `name` + `description` (what and when), an H1,
+ * a `## When to use` section, then the procedure, with a `trigger-tests.json`
+ * beside it. The model supplies the procedure and the two descriptions; the
+ * wrapper supplies the structure — and the provenance marker, because the
+ * house shape is what the on-demand skills system already reads.
+ * @param options - `{name, description, when, body}`.
+ * @returns the SKILL.md text.
+ */
+export function composeSkillMarkdown({ name, description, when, body }) {
+  const procedure = String(body ?? '').trim();
+  const trigger = normalize(when) || normalize(description);
+  // "supplier-research" -> "Supplier research", the sentence-case H1 the
+  // curated tree uses. A body that already opens with its own H1 keeps it.
+  const title = name.charAt(0).toUpperCase() + name.slice(1).replace(/-/g, ' ');
+  const lines = ['---', `name: ${name}`, `description: ${normalize(description)}`, LEARN_MARKER, '---', ''];
+  if (!/^#\s/.test(procedure)) lines.push(`# ${title}`, '');
+  if (!/^##\s+when to use\b/im.test(procedure)) lines.push('## When to use', '', trigger, '');
+  lines.push(procedure, '');
+  return lines.join('\n');
+}
+
+/**
+ * Write one skill, keeping a bounded history of the version it replaced.
+ *
+ * A colliding name is only a collision when the existing skill was NOT written
+ * by learn: the curation loop may replace its own output, but a user's or a
+ * pack's skill is never overwritten. A foreign collision is written under the
+ * first free `<name>-N` and reported back as `renamedFrom`.
+ * @param options - `{dir, name, description, when, body, keep, auditPath}`.
+ * @returns `{file, backup, name, renamedFrom}`; `file:null` when no name is free.
+ */
+export function writeSkill({ dir, name, description, when, body, keep = 5, auditPath }) {
+  const occupied = skillNameTaken(dir, name);
+  const target = occupied && !isLearnAuthored({ dir, name, auditPath }) ? freeSkillName(dir, name) : name;
+  if (target === null) return { file: null, backup: null, name: null, renamedFrom: name };
+
+  const skillDir = path.join(dir, target);
   const file = path.join(skillDir, 'SKILL.md');
   mkdirSync(skillDir, { recursive: true, mode: 0o700 });
   let backup = null;
   if (existsSync(file)) {
-    const history = path.join(dir, '.history', name);
+    const history = path.join(dir, '.history', target);
     mkdirSync(history, { recursive: true, mode: 0o700 });
     backup = path.join(history, `${new Date().toISOString().replace(/[:.]/g, '-')}.md`);
     copyFileSync(file, backup);
@@ -353,13 +501,18 @@ export function writeSkill({ dir, name, description, body, keep = 5 }) {
       }
     }
   }
-  const text = `---\nname: ${name}\ndescription: ${description}\n---\n\n${body.trim()}\n`;
+  const text = composeSkillMarkdown({ name: target, description, when, body });
   // Temp-then-rename like every other store in this repo: a crash mid-write
   // would otherwise corrupt the skill, and a first write has no backup.
   const temp = `${file}.${process.pid}.tmp`;
   writeFileSync(temp, text, { mode: 0o600 });
   renameSync(temp, file);
-  return { file, backup };
+  // The stub marks a draft: learn cannot write honest fixtures, and its
+  // existence is what asks a curator to fill them in. An existing file is
+  // curation work and is never replaced.
+  const triggers = path.join(skillDir, 'trigger-tests.json');
+  if (!existsSync(triggers)) writeFileSync(triggers, `${JSON.stringify(TRIGGER_TESTS_STUB, null, 2)}\n`, { mode: 0o600 });
+  return { file, backup, name: target, renamedFrom: target === name ? null : name };
 }
 
 /** Append one audit record, rotating a file that grew past 2 MB. */
@@ -407,20 +560,26 @@ async function appenderForNotices() {
 }
 
 /**
- * The display-only payload for one completed review: counts and a skill name,
- * never the stored text.
+ * The display-only payload for one completed review: counts, a skill name and —
+ * when it happened — a rename or a lost review. Never the stored text.
  * @param turnId - the turn the review observed.
- * @param applied - what the review wrote.
+ * @param applied - what the review wrote, plus optional `renamedFrom` /
+ *   `failure` keys the caller derives from the write and the model replies.
  * @returns a small JSON payload.
  */
 export function learnedNotice(turnId, applied) {
-  return {
+  const notice = {
     v: 1,
     turn: Number.isSafeInteger(turnId) ? turnId : 0,
     memory: applied.memory.length,
     forget: applied.forget,
     skill: applied.skill?.name ?? null,
   };
+  // Keep the payload minimal: only a review that has something extra to say
+  // carries the extra fields, so an ordinary notice stays byte-identical.
+  if (applied.skill?.renamedFrom) notice.renamed = String(applied.skill.renamedFrom);
+  if (applied.failure) notice.failure = String(applied.failure);
+  return notice;
 }
 
 /**
@@ -491,10 +650,76 @@ function systemPrompt(maxMemory) {
     'Record only durable, user-relevant facts: stated preferences, decisions, corrections, people, projects and constraints.',
     'Never record transient task state, tool output, credentials, or anything already present in the memory profile.',
     'When the turn taught a repeatable procedure the user will want again, propose one skill: a short self-contained SKILL.md body, not a diary. A skill must be supported by a memory entry in the same reply.',
-    'Return: {"memory":[{"target":"user"|"agent","text":"..."}],"forget":[{"target":"user"|"agent","text":"..."}],"skill":{"name":"kebab-case","description":"one line","body":"markdown"}|null}',
+    'Return: {"memory":[{"target":"user"|"agent","text":"..."}],"forget":[{"target":"user"|"agent","text":"..."}],"skill":{"name":"kebab-case","description":"what it does and when to reach for it, one line","when":"the situation that should trigger it, one line","body":"markdown procedure only — no frontmatter, no When-to-use heading"}|null}',
     `At most ${maxMemory} memory entries, ${maxMemory} forgets and 1 skill. Empty arrays when nothing qualifies.`,
     'Keep the reply under 1400 tokens: memory text under 200 characters, skill body under 2500 characters (about 50 lines). A cut-off reply is discarded.',
   ].join('\n');
+}
+
+/**
+ * The reduced retry prompt: same contract, less input.
+ *
+ * The first reply hit the token ceiling, so the retry drops the existing-skills
+ * list and hard-caps the digest; `memoryOnly` is the last resort, which asks for
+ * one memory decision and no skill so a small object must survive the ceiling.
+ * @param turn - the captured turn.
+ * @param config - resolved config.
+ * @param options - whether this is the memory-only fallback, and the profile text.
+ * @returns the user content for the retry.
+ */
+export function reducedPrompt(turn, config, { memoryOnly = false, memoryBlock = '(empty)' } = {}) {
+  const digest = buildDigest(turn, memoryOnly ? { userChars: 600, assistantChars: 300, tools: 5 } : { userChars: 1200, assistantChars: 900, tools: 10 });
+  const block = memoryBlock.slice(0, memoryOnly ? 800 : 1500);
+  const ceiling = memoryOnly ? 1200 : 3000;
+  return [`<memory_profile>\n${block}\n</memory_profile>`, digest].join('\n').slice(0, Math.min(ceiling, config.maxInputChars));
+}
+
+/** System prompt for the memory-only fallback: the smallest decision that still saves the turn. */
+function memoryOnlyPrompt() {
+  return [
+    'You are the background curator for an assistant.',
+    'The previous reply was cut off, so answer the smallest useful question.',
+    'Reply with JSON only: {"memory":[{"target":"user"|"agent","text":"..."}]} holding at most one durable fact, or {"memory":[]}.',
+    'No forget list, no skill. Keep the whole reply under 120 characters of JSON.',
+  ].join('\n');
+}
+
+/**
+ * Run one auxiliary model call and collect its text.
+ * @param ctx - Cordis context with the llm service.
+ * @param options - `{route, sessionId, system, input, config, purpose}`.
+ * @returns the collected text and finish reason.
+ */
+async function callReviewModel(ctx, { route, sessionId, system, input, config, purpose }) {
+  let output = '';
+  let finish;
+  const signal = AbortSignal.timeout(config.timeoutMs);
+  const stream = ctx.llm.stream({
+    provider: route.provider,
+    model: route.model,
+    // The routed provider needs the session identity on the request; the loop
+    // stamps it for conversation calls and an auxiliary call must do the same.
+    sessionId,
+    system,
+    messages: [{ role: 'user', content: [{ type: 'text', text: input }] }],
+    maxTokens: config.maxTokens,
+    signal,
+    purpose,
+  });
+  for await (const chunk of stream) {
+    if (chunk.type === 'text-delta') output += chunk.text;
+    else if (chunk.type === 'finish') finish = chunk.reason;
+  }
+  return { output, finish };
+}
+
+/** Whether a finish reason represents a hard failure worth aborting the review. */
+function hardFailure(finish) {
+  const truncated = finish?.kind === 'max-tokens';
+  if (!finish) return 'finish missing';
+  if (finish.kind === 'stop' || truncated) return null;
+  const failure = finish.failure;
+  return failure ? `${failure.code ?? 'LLM_ERROR'}: ${String(failure.message ?? '').slice(0, 200)}` : `finish ${finish.kind}`;
 }
 
 /**
@@ -525,46 +750,62 @@ async function review(ctx, turn, config) {
     .join('\n')
     .slice(0, config.maxInputChars);
 
-  let output = '';
-  let finish;
-  const signal = AbortSignal.timeout(config.timeoutMs);
-  const stream = ctx.llm.stream({
-    provider: route.provider,
-    model: route.model,
-    // The routed provider needs the session identity on the request; the loop
-    // stamps it for conversation calls and an auxiliary call must do the same.
-    sessionId: turn.sessionId,
-    system: systemPrompt(config.maxMemory),
-    messages: [{ role: 'user', content: [{ type: 'text', text: input }] }],
-    maxTokens: config.maxTokens,
-    signal,
-    purpose: 'learning-review',
-  });
-  for await (const chunk of stream) {
-    if (chunk.type === 'text-delta') output += chunk.text;
-    else if (chunk.type === 'finish') finish = chunk.reason;
-  }
-  // A truncated reply is a failure only if the JSON did not survive: the model
-  // can finish a complete object and then ramble past the ceiling.
-  const truncated = finish?.kind === 'max-tokens';
-  if (!finish || (finish.kind !== 'stop' && !truncated)) {
-    const failure = finish?.failure;
-    const detail = failure ? `${failure.code ?? 'LLM_ERROR'}: ${String(failure.message ?? '').slice(0, 200)}` : `finish ${finish?.kind ?? 'missing'}`;
-    warnOnce(`review-finish:${detail.slice(0, 60)}`, `review call failed: ${detail}`);
-    audit(config, { session: turn.sessionId, ok: false, error: detail });
+  const call = (system, text, purpose) => callReviewModel(ctx, { route, sessionId: turn.sessionId, system, input: text, config, purpose });
+  const first = await call(systemPrompt(config.maxMemory), input, 'learning-review');
+  const failure = hardFailure(first.finish);
+  if (failure !== null) {
+    warnOnce(`review-finish:${failure.slice(0, 60)}`, `review call failed: ${failure}`);
+    audit(config, { session: turn.sessionId, ok: false, error: failure });
     return;
   }
 
-  const parsed = parseReview(output);
-  if (truncated && parsed === null) {
-    // The one failure mode this plugin actually hit in production: a 500-token
-    // ceiling cut the JSON mid-object and every review was silently dropped.
-    const detail = `truncated review (max-tokens); ${output.length} chars, no complete JSON`;
-    warnOnce('review-truncated', `review was cut off at maxTokens=${config.maxTokens}; raise it or shorten the skill body`);
+  // A truncated reply is only lost if the JSON did not survive: a model can
+  // finish a complete object and then ramble past the ceiling.
+  let parsed = parseReview(first.output);
+  let memoryOnly = false;
+  let lastOutput = first.output;
+  /** Why the truncated reply could not be salvaged, when it could not. */
+  let lost = null;
+  if (first.finish?.kind === 'max-tokens' && parsed === null) {
+    // The failure this plugin actually hit in production: the ceiling cut the
+    // JSON mid-object and every review was silently dropped. Retry once with a
+    // reduced prompt, then with the smallest decision that still saves the turn.
+    warnOnce('review-truncated', `review was cut off at maxTokens=${config.maxTokens}; retrying with a reduced prompt`);
+    const retry = await call(systemPrompt(config.maxMemory), reducedPrompt(turn, config, { memoryBlock }), 'learning-review-retry');
+    const retryFailure = hardFailure(retry.finish);
+    if (retryFailure !== null) {
+      lost = `retry failed: ${retryFailure}`;
+    } else {
+      parsed = parseReview(retry.output);
+      lastOutput = retry.output;
+      if (parsed === null) {
+        memoryOnly = true;
+        const smallest = await call(memoryOnlyPrompt(), reducedPrompt(turn, config, { memoryOnly: true, memoryBlock }), 'learning-review-memory-only');
+        const smallestFailure = hardFailure(smallest.finish);
+        if (smallestFailure !== null) {
+          lost = `memory-only fallback failed: ${smallestFailure}`;
+        } else {
+          parsed = parseReview(smallest.output);
+          lastOutput = smallest.output;
+        }
+      }
+    }
+  }
+
+  if (parsed === null) {
+    // Three replies and not one usable object: still record the failure where
+    // the user sees review outcomes, instead of dropping the review silently.
+    const detail = `${lost ?? 'truncated review (max-tokens)'}; ${lastOutput.length} chars, no complete JSON after retry and memory-only fallback`;
+    warnOnce('review-truncated-lost', `review was cut off at maxTokens=${config.maxTokens} and both fallbacks failed`);
     audit(config, { session: turn.sessionId, ok: false, error: detail });
+    await recordLearned(turn.session, learnedNotice(turn.turnId, { memory: [], forget: 0, skill: null, failure: 'truncated' }), config.appendRecord);
     return;
   }
+
   const result = validateReview(parsed, config);
+  // The memory-only fallback never carried a skill; keep it that way even if
+  // the model volunteered one, because that path has no supporting evidence.
+  if (memoryOnly) result.skill = null;
   const applied = { memory: [], forget: 0, skill: null };
 
   if (result.memory.length > 0 || result.forget.length > 0) {
@@ -590,11 +831,22 @@ async function review(ctx, turn, config) {
       dir: config.skillsDir,
       name: result.skill.name,
       description: result.skill.description,
+      when: result.skill.when,
       body: result.skill.body,
       keep: 5,
+      auditPath: config.auditPath,
     });
-    applied.skill = { name: result.skill.name, file: written.file, backup: written.backup };
-    skillTimes.push(Date.now());
+    if (written.file === null) {
+      result.errors.push('no free skill name');
+    } else {
+      applied.skill = {
+        name: written.name,
+        file: written.file,
+        backup: written.backup,
+        ...(written.renamedFrom ? { renamedFrom: written.renamedFrom } : {}),
+      };
+      skillTimes.push(Date.now());
+    }
   } else if (result.skill) {
     result.errors.push('skill write skipped by a cap');
   }

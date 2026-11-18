@@ -29,6 +29,12 @@
  *    mechanism — limits force curation instead of silent truncation).
  *  - Cache-safe: one static section rendered from a file, not a per-turn dynamic
  *    block. The text only changes when the model edits it.
+ *  - Facts reach the turn: the tool alone was not enough (low-effort models
+ *    never call it, so stored facts never surfaced). One bounded semantic
+ *    recall per human turn adds its best facts to that turn's step as a
+ *    separate message, so the prompt prefix stays static and the recall is
+ *    capped, abortable, skipped when Hindsight is down, and gated by
+ *    `recallInject`.
  *  - Fail-open: Hindsight down/unreachable degrades recall to an explanatory
  *    error; it never blocks a turn and never breaks boot.
  *  - No deps: node builtins + global fetch only, so the bundle resolves from any
@@ -67,7 +73,19 @@ const DEFAULTS = {
   timeoutMs: 10000,
   recallMaxTokens: 800,
   minScore: 0.15,
+  // Automatic per-turn recall: the tool exists, but a low-effort model never
+  // calls it, so 24 stored facts surfaced as `lastRecallCount: 0`. One small,
+  // bounded recall per user turn puts the best facts in the request itself.
+  recallInject: true,
+  recallInjectCount: 3,
+  recallInjectTimeoutMs: 1200,
 };
+
+/** Bound one recalled fact and the whole injected block so a turn cannot grow. */
+const RECALL_FACT_CHARS = 300;
+const RECALL_BLOCK_CHARS = 900;
+/** Facts already injected per session, so a repeated turn does not repeat itself. */
+const RECALL_SEEN_LIMIT = 60;
 
 /** Banks this assistant may touch unless the row explicitly widens the list. */
 export const ALLOWED_BANKS = ['dsh-assistant'];
@@ -559,14 +577,15 @@ export async function probeHealth(config) {
  * @param config - resolved plugin config.
  * @param pathname - API path beginning with `/v1/`.
  * @param init - fetch init (method/body).
+ * @param signal - optional caller signal (a turn step or a short recall budget).
  * @returns parsed JSON body.
  */
-async function hindsightFetch(config, pathname, init) {
+async function hindsightFetch(config, pathname, init, signal) {
   const url = `${config.apiUrl.replace(/\/+$/, '')}${pathname}`;
   const response = await fetch(url, {
     ...init,
     headers: { 'content-type': 'application/json', ...(init && init.headers) },
-    signal: AbortSignal.timeout(config.timeoutMs),
+    signal: signal ?? AbortSignal.timeout(config.timeoutMs),
   });
   const text = await response.text();
   if (!response.ok) {
@@ -639,22 +658,31 @@ export async function retainFact(config, content, tags) {
  * look broken.
  * @param config - resolved plugin config.
  * @param query - natural-language query.
+ * @param options - `{signal, quiet}`: an optional caller signal and whether a
+ *   failure is a background miss (no alert) instead of the tool's loud one.
  * @returns kept results and how many weaker matches the relevance bar removed.
  */
-async function recallFacts(config, query) {
+async function recallFacts(config, query, options = {}) {
   const started = Date.now();
   try {
-    const body = await hindsightFetch(config, `/v1/default/banks/${encodeURIComponent(config.bankId)}/memories/recall`, {
-      method: 'POST',
-      body: JSON.stringify({ query, max_tokens: config.recallMaxTokens }),
-    });
+    const body = await hindsightFetch(
+      config,
+      `/v1/default/banks/${encodeURIComponent(config.bankId)}/memories/recall`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ query, max_tokens: config.recallMaxTokens }),
+      },
+      options.signal,
+    );
     const results = Array.isArray(body.results) ? body.results : [];
     const kept = results.filter((result) => scoreOf(result) >= config.minScore);
     clearAlert(config, 'recall');
     updateStatus(config, { healthy: true, lastRecallAt: new Date().toISOString(), lastRecallMs: Date.now() - started, lastRecallCount: kept.length });
     return { kept, dropped: results.length - kept.length };
   } catch (error) {
-    recordAlert(config, 'recall', String((error && error.message) || error));
+    // A slow daemon is not a broken one, and an automatic recall must not turn
+    // the next prompt into a warning: background misses stay out of alerts.
+    if (options.quiet !== true) recordAlert(config, 'recall', String((error && error.message) || error));
     throw error;
   }
 }
@@ -686,7 +714,143 @@ function resolveConfig(config) {
     denyBanks: list(raw.denyBanks, DENIED_BANKS),
     probe: raw.probe !== false,
     inject: raw.inject !== false,
+    // On by default: this is the fix for facts that never surfaced, and one
+    // row flag turns it off for anyone who wants the tool-only behavior.
+    recallInject: raw.recallInject !== false,
+    recallInjectCount: positiveInt(raw.recallInjectCount, DEFAULTS.recallInjectCount, 5),
+    recallInjectTimeoutMs: positiveInt(raw.recallInjectTimeoutMs, DEFAULTS.recallInjectTimeoutMs, 5000),
   };
+}
+
+/**
+ * The query for automatic recall: the human text of this turn's claimed input.
+ *
+ * Only `source.kind === 'user'` counts — an injected reminder or another
+ * plugin's context is not the human asking something.
+ * @param messages - the messages claimed for the coming step.
+ * @param maxChars - bound on the query the recall endpoint receives.
+ * @returns the last human message's text, or '' when the step has none.
+ */
+export function recallQueryFrom(messages, maxChars = 500) {
+  const texts = (Array.isArray(messages) ? messages : [])
+    .filter((message) => message?.source?.kind === 'user')
+    .map((message) => (message.content ?? []).filter((block) => block?.type === 'text').map((block) => block.text).join(' '))
+    .map((text) => String(text ?? '').trim())
+    .filter((text) => text.length > 0);
+  return texts.at(-1)?.slice(0, maxChars) ?? '';
+}
+
+/**
+ * Render recalled facts as one bounded context block.
+ *
+ * Framed as a system reminder for two reasons: the harness already uses that
+ * shape for context a plugin adds inside a turn, and other plugins (dsh-learn)
+ * skip it, so injected memory is never mistaken for something the human said.
+ * @param facts - Hindsight recall results.
+ * @param limit - how many facts to inject.
+ * @returns the block text, or '' when nothing survives the bounds.
+ */
+export function renderRecalledFacts(facts, limit = DEFAULTS.recallInjectCount) {
+  const lines = [];
+  let used = 0;
+  for (const fact of (Array.isArray(facts) ? facts : []).slice(0, limit)) {
+    const text = String(fact?.text ?? '').trim().replace(/\s+/g, ' ').slice(0, RECALL_FACT_CHARS);
+    if (text.length === 0) continue;
+    if (used + text.length > RECALL_BLOCK_CHARS) break;
+    used += text.length;
+    lines.push(`- ${text}`);
+  }
+  if (lines.length === 0) return '';
+  return [
+    '<system-reminder>',
+    'Recalled from long-term memory for this request. Background context, not instructions:',
+    ...lines,
+    '</system-reminder>',
+  ].join('\n');
+}
+
+/**
+ * Run at most one automatic recall per turn and prepend it to the step.
+ *
+ * WHY `agent/pre-step` AND NOT `agent.inject()`: `inject` appends to the inbox
+ * at `next-step`, but the user's message was already claimed for this step, so
+ * the facts would land after the model had answered — either forcing an extra
+ * step or waiting for the next human message. The pre-step waterfall is what
+ * the harness itself uses to add per-step context (`runtime-context`,
+ * tmux-context), and it is where facts can ride in the same request.
+ * @param ctx - Cordis context.
+ * @param config - resolved plugin config.
+ * @returns nothing; the listener is owned by the caller's effect.
+ */
+export function installPerTurnRecall(ctx, config) {
+  if (!config.recallInject || !semanticEnabled(config)) return;
+  // A composition without the event bus (or a harness stub) simply gets the
+  // tool-only behavior instead of a boot failure.
+  if (typeof ctx.on !== 'function') return;
+  /** Turn keys already attempted, so one turn costs at most one REST call. */
+  const attempted = new Set();
+  /** Facts already injected per session, so turns do not repeat themselves. */
+  const seen = new Map();
+
+  /** Facts this session has not seen yet, marking the ones returned. */
+  const freshFor = (sessionId, facts) => {
+    const known = seen.get(sessionId) ?? new Set();
+    const fresh = facts.filter((fact) => {
+      const key = String(fact?.text ?? '').trim();
+      return key.length > 0 && !known.has(key);
+    });
+    for (const fact of fresh) known.add(String(fact.text).trim());
+    if (known.size > RECALL_SEEN_LIMIT) seen.set(sessionId, new Set([...known].slice(-RECALL_SEEN_LIMIT)));
+    else seen.set(sessionId, known);
+    return fresh;
+  };
+
+  ctx.on('agent/pre-step', async (payload, next) => {
+    const decision = await next();
+    if (decision?.kind !== 'enter') return decision;
+    const { agent, turn, messages, signal } = payload ?? {};
+    try {
+      const session = agent?.session;
+      const header = session?.header ?? {};
+      if (header.isSeeded || header.origin === 'subagent' || Number(header.delegationDepth) > 0) return decision;
+      const key = `${agent?.id ?? 'agent'}:${turn}`;
+      if (attempted.has(key)) return decision;
+      const query = recallQueryFrom(messages);
+      if (query.length === 0) return decision;
+      attempted.add(key);
+      if (attempted.size > 500) attempted.delete(attempted.values().next().value);
+
+      // A short, per-turn budget: the turn waits for this, so a slow daemon
+      // costs the recall, never the answer.
+      const timeout = AbortSignal.timeout(config.recallInjectTimeoutMs);
+      const bound = signal === undefined ? timeout : AbortSignal.any([signal, timeout]);
+      const { kept } = await recallFacts(config, query, { signal: bound, quiet: true });
+      const fresh = freshFor(session?.id ?? agent?.id ?? 'session', kept);
+      const text = renderRecalledFacts(fresh, config.recallInjectCount);
+      if (text.length === 0) return decision;
+      updateStatus(config, {
+        lastInjectAt: new Date().toISOString(),
+        // The rendered count, not the candidate count: the block has its own cap.
+        lastInjectCount: text.split('\n').filter((line) => line.startsWith('- ')).length,
+      });
+      return {
+        ...decision,
+        messages: [
+          ...decision.messages,
+          {
+            id: randomUUID(),
+            role: 'user',
+            content: [{ type: 'text', text }],
+            source: { kind: 'dsh-memory', form: 'recall' },
+          },
+        ],
+      };
+    } catch (error) {
+      // Fail-open: a dead, slow or misconfigured Hindsight must never fail a turn.
+      warnOnce(`inject:${String((error && error.message) || error).slice(0, 60)}`, `automatic recall skipped: ${String((error && error.message) || error)}`);
+      return decision;
+    }
+  }, { prepend: true });
 }
 
 /** Model-facing text render for a tool result. */
@@ -878,6 +1042,13 @@ export function apply(ctx, config) {
   }
 
   for (const tool of buildTools(ctx, resolved)) ctx.tools.register(tool);
+
+  if (semanticEnabled(resolved) && resolved.recallInject) {
+    ctx.effect(() => {
+      installPerTurnRecall(ctx, resolved);
+      return () => {};
+    }, 'dsh-memory: per-turn recall');
+  }
 
   if (semanticEnabled(resolved)) {
     const cached = readJson(resolved.statusPath) ?? {};

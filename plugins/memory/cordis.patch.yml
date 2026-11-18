@@ -14,6 +14,9 @@
 #       recallMaxTokens: 800
 #       timeoutMs: 4000
 #       inject: true                       # false = tools only, no prompt block
+#       recallInject: true                 # false = no automatic per-turn recall
+#       recallInjectCount: 3               # facts added to a turn, max 5
+#       recallInjectTimeoutMs: 1200        # a turn waits at most this long for it
 - insert:
     - id: dsh-memory
       name: '@local/dsh-memory'
