@@ -1,0 +1,42 @@
+{
+  "meta": {
+    "title": "Studio",
+    "description": "The design studio's page: a brief composer placeholder and the works library of delivered designs. A delivered design is registered automatically, and each work shows its type, theme and file path in a thumbnail grid. Drafting from the page is not ready yet; for now, ask in chat. Everything is kept locally under the profile's studio directory."
+  },
+  "ui": {
+    "panel": "Studio",
+    "home": "Home",
+    "works": "Works",
+    "views": "Studio views",
+    "subtitle": "Delivered designs, in one place.",
+    "brief": "Brief",
+    "briefPlaceholder": "What should the studio make?",
+    "draft": "Draft it",
+    "comingSoon": "Not ready yet.",
+    "composerNote": "Drafting from here isn't ready yet — for now, ask in chat.",
+    "quickStarts": "Quick starts",
+    "quickDeck": "A deck",
+    "quickWeb": "A landing page",
+    "quickMotion": "A motion loop",
+    "quickInfographic": "An infographic",
+    "recent": "Recent works",
+    "seeAll": "See all works",
+    "loading": "Reading the works library…",
+    "loadFailed": "Could not read the works library",
+    "retry": "Retry",
+    "emptyTitle": "No works yet",
+    "emptyBody": "Designs you ask for in chat show up here when they're ready.",
+    "emptyRecent": "Nothing delivered yet.",
+    "askInChat": "Or ask in chat: “design a deck for the offsite”.",
+    "module": "Type",
+    "theme": "Theme",
+    "registered": "Delivered",
+    "untitled": "Untitled work",
+    "path": "Path",
+    "copyPath": "Copy path",
+    "copied": "Copied",
+    "copyFailed": "Select the path and copy it.",
+    "close": "Close",
+    "selectHint": "Choose a work to see its details."
+  }
+}

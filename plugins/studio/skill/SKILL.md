@@ -192,6 +192,8 @@ python3 "$HD/scripts/design_lint.py" ledger add <final-file> --project <name>   
 python3 "$HD/scripts/learn.py" harvest <project-dir>                            # anything here worth remembering
 ```
 
+At delivery time, when `studio_library` is available, register the delivered file as a work — `add` with its path, a title, and the module it came from — so it appears on the Studio page.
+
 When the user makes an explicit taste statement along the way ("too plain", "this doesn't feel AI-made at all", "A's structure with C's color"), record it verbatim with
 `learn.py add --kind preference`, state its scope of application, and while recording tell the user once: "I've put that in the local taste file" —
 it lives only on their own machine (`~/.dsh-studio/`); if they say no, don't record it. When a review agent's high score conflicts with the user's choice, the user wins.
